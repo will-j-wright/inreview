@@ -1,5 +1,7 @@
 import * as vscode from "vscode";
 
+import { JjCommandError, JjError } from "../jj/errors";
+
 export type LogLevel = "error" | "warn" | "info" | "debug";
 
 const priorities: Record<LogLevel, number> = {
@@ -29,7 +31,8 @@ export class InReviewLogger implements vscode.Disposable {
   }
 
   public error(message: string, error?: unknown): void {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
+    const detail =
+      error instanceof Error ? `: ${formatErrorForLog(error)}` : "";
     this.write("error", `${message}${detail}`);
   }
 
@@ -56,4 +59,20 @@ export function redactLogText(value: string): string {
     /("(?:secret|body|content)"\s*:\s*")[^"]*(")/giu,
     "$1[REDACTED]$2",
   );
+}
+
+function formatErrorForLog(error: Error): string {
+  const code =
+    "code" in error && typeof error.code === "string"
+      ? ` [${error.code}]`
+      : "";
+  const detail = `${error.name}${code}: ${error.message}`;
+  if (
+    error instanceof JjError &&
+    error.code === "invalid-repository" &&
+    error.cause instanceof JjCommandError
+  ) {
+    return `${detail} Caused by ${error.cause.name} [${error.cause.code}]: ${error.cause.message}`;
+  }
+  return detail;
 }

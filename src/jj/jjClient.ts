@@ -39,7 +39,7 @@ const DEFAULT_STDOUT_LIMIT = 64 * 1024 * 1024;
 const DEFAULT_STDERR_LIMIT = 1024 * 1024;
 const DEFAULT_CAPTURE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_PROBE_BYTES = 8192;
-const VERSION_RANGE = "jj 0.44.x";
+const VERSION_RANGE = "jj 0.44 or later";
 const CHANGE_ID_PATTERN = /^[k-z]{32}$/;
 const COMMIT_ID_PATTERN = /^[0-9a-f]{40,128}$/;
 const OPERATION_ID_PATTERN = /^[0-9a-f]{64,256}$/;
@@ -129,7 +129,7 @@ export class JjClient {
       stdoutLimitBytes: 4096,
     });
     const version = parseVersion(result.toString("utf8"));
-    if (version.major !== 0 || version.minor !== 44) {
+    if (version.major === 0 && version.minor < 44) {
       throw new JjUnsupportedVersionError(version.display, VERSION_RANGE);
     }
     this.capabilities = {
@@ -154,7 +154,7 @@ export class JjClient {
         signal === undefined ? {} : { signal },
       );
     } catch (error) {
-      if (error instanceof JjCommandError) {
+      if (isNotRepositoryCommandError(error)) {
         throw new JjInvalidRepositoryError(this.repository, { cause: error });
       }
       throw error;
@@ -183,7 +183,7 @@ export class JjClient {
         },
       );
     } catch (error) {
-      if (error instanceof JjCommandError) {
+      if (isNotRepositoryCommandError(error)) {
         throw new JjInvalidRepositoryError(this.repository, { cause: error });
       }
       throw error;
@@ -195,7 +195,10 @@ export class JjClient {
     try {
       return await realpath(root);
     } catch (error) {
-      throw new JjInvalidRepositoryError(root, { cause: error });
+      throw new JjInvalidOutputError(
+        "jj returned a repository root that could not be resolved.",
+        { cause: error },
+      );
     }
   }
 
@@ -509,6 +512,7 @@ export function parseVersion(output: string): JjVersion {
       `The executable returned an unrecognized version: ${output.trim()}`,
     );
   }
+
   const [, majorText, minorText, patchText] = match;
   const major = Number(majorText);
   const minor = Number(minorText);
@@ -519,6 +523,17 @@ export function parseVersion(output: string): JjVersion {
     patch,
     display: `${String(major)}.${String(minor)}.${String(patch)}`,
   };
+}
+
+function isNotRepositoryCommandError(
+  error: unknown,
+): error is JjCommandError {
+  return (
+    error instanceof JjCommandError &&
+    /(?:^|\n)(?:Error:\s*)?(?:There is no jj repo\b|No jj repo(?:sitory)? (?:was )?found\b|Not a jj repository\b)/iu.test(
+      error.stderr,
+    )
+  );
 }
 
 export function exactRootFileset(repositoryRelativePath: string): string {

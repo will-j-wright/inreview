@@ -6,6 +6,14 @@
   "private": true,
   "publisher": "inreview-local",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/will-j-wright/inreview.git"
+  },
+  "homepage": "https://github.com/will-j-wright/inreview#readme",
+  "bugs": {
+    "url": "https://github.com/will-j-wright/inreview/issues"
+  },
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -395,7 +403,7 @@
     "validate:package": "node scripts/validate-package.mjs",
     "check": "npm run typecheck && npm run lint && npm run test:unit && npm run build:production && npm run validate:package",
     "vscode:prepublish": "npm run build:production",
-    "package:vsix": "npm run check && vsce package --no-dependencies --allow-missing-repository --skip-license"
+    "package:vsix": "npm run check && vsce package --no-dependencies --skip-license"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

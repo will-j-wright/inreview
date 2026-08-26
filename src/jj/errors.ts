@@ -9,6 +9,7 @@ export type JjErrorCode =
   | "invalid-selection"
   | "merge"
   | "output-limit"
+  | "spawn-failed"
   | "stale-selection"
   | "timeout"
   | "unsupported-version";
@@ -25,10 +26,28 @@ export class JjError extends Error {
 }
 
 export class JjExecutableNotFoundError extends JjError {
-  public constructor(executable: string, options?: ErrorOptions) {
+  public constructor(
+    public readonly executable: string,
+    options?: ErrorOptions,
+  ) {
     super(
       "executable-not-found",
       `The jj executable "${executable}" was not found.`,
+      options,
+    );
+  }
+}
+
+export class JjExecutableSpawnError extends JjError {
+  public constructor(
+    public readonly executable: string,
+    public readonly systemCode: string | undefined,
+    detail: string,
+    options?: ErrorOptions,
+  ) {
+    super(
+      "spawn-failed",
+      `Could not start the jj executable "${executable}"${systemCode === undefined ? "" : ` (${systemCode})`}: ${detail}`,
       options,
     );
   }

@@ -1,11 +1,9 @@
-import path from "node:path";
-
 import * as vscode from "vscode";
 
 import { commandDefinitions } from "./commands";
 import { readSettings, type InReviewSettings } from "./config/settings";
 import { selectExtensionApi } from "./extensionApi";
-import { JjClient } from "./jj";
+import { discoverWorkspaceRepository, JjClient } from "./jj";
 import {
   CopilotSetupController,
   McpRuntime,
@@ -403,25 +401,17 @@ async function initializeWorkspace(
       `The workspace folder “${unsupported.name}” uses the unsupported ${unsupported.uri.scheme} scheme. InReview requires local file folders.`,
     );
   }
-  const roots: string[] = [];
-  for (const folder of folders) {
-    const client = new JjClient(folder.uri.fsPath, {
-      executable: settings.jjPath,
-    });
-    const root = await client.resolveRepositoryRoot();
-    if (!roots.some((candidate) => samePath(candidate, root))) {
-      roots.push(root);
-    }
+  const discovery = await discoverWorkspaceRepository(
+    folders.map((folder) => folder.uri.fsPath),
+    (folderPath) =>
+      new JjClient(folderPath, {
+        executable: settings.jjPath,
+      }),
+  );
+  if (discovery.kind === "unavailable") {
+    return unavailable(discovery.message);
   }
-  if (roots.length !== 1) {
-    return unavailable(
-      "This window contains several jj repositories. Open folders from only one repository.",
-    );
-  }
-  const canonicalRoot = roots[0];
-  if (canonicalRoot === undefined) {
-    return unavailable("InReview could not resolve a jj repository.");
-  }
+  const canonicalRoot = discovery.root;
 
   const environmentKey = [
     vscode.env.remoteName ?? "local",
@@ -448,15 +438,6 @@ function unavailable(message: string): Initialization {
     state: { kind: "unavailable", message },
     reason: message,
   };
-}
-
-function samePath(left: string, right: string): boolean {
-  const normalizedLeft = path.resolve(left).replace(/[\\/]+$/u, "");
-  const normalizedRight = path.resolve(right).replace(/[\\/]+$/u, "");
-  return process.platform === "win32"
-    ? normalizedLeft.toLocaleLowerCase("en-US") ===
-        normalizedRight.toLocaleLowerCase("en-US")
-    : normalizedLeft === normalizedRight;
 }
 
 function isSupportedMcpEnvironment(): boolean {

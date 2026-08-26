@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   JjAmbiguousChangeError,
   JjClient,
+  JjCommandError,
   JjConflictError,
   JjInvalidOutputError,
   JjInvalidRepositoryError,
@@ -118,13 +119,23 @@ describe("JjClient", () => {
     expect(executor.requests[1]?.args).toContain("never");
   });
 
-  it("rejects unsupported versions without overfitting the development suffix", async () => {
-    const executor = new FakeExecutor(ok("jj 0.45.0-dev.1\n"));
+  it("rejects jj versions older than 0.44", async () => {
+    const executor = new FakeExecutor(ok("jj 0.43.9\n"));
     const client = new JjClient("C:\\repo", { executor });
 
-    await expect(client.checkCapabilities()).rejects.toBeInstanceOf(
-      JjUnsupportedVersionError,
-    );
+    await expect(client.checkCapabilities()).rejects.toMatchObject({
+      constructor: JjUnsupportedVersionError,
+      supportedRange: "jj 0.44 or later",
+    });
+  });
+
+  it("accepts future minor versions and development suffixes", async () => {
+    const executor = new FakeExecutor(ok("jj 0.99.0-dev.1\n"));
+    const client = new JjClient("C:\\repo", { executor });
+
+    await expect(client.checkCapabilities()).resolves.toMatchObject({
+      version: { major: 0, minor: 99, patch: 0 },
+    });
   });
 
   it("maps an initial repository command failure to an invalid repository", async () => {
@@ -152,6 +163,20 @@ describe("JjClient", () => {
       JjInvalidRepositoryError,
     );
     expect(client.repository).toContain("repo with spaces");
+  });
+
+  it("does not mask a repository command failure as a non-repository folder", async () => {
+    const commandFailure = new JjCommandError(
+      "jj",
+      ["root"],
+      1,
+      "Error: Failed to load the repository configuration",
+    );
+    const client = new JjClient("C:\\repo", {
+      executor: new FakeExecutor(ok("jj 0.44.0\n"), commandFailure),
+    });
+
+    await expect(client.resolveRepositoryRoot()).rejects.toBe(commandFailure);
   });
 
   it("rejects malformed machine-readable output", async () => {

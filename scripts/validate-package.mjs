@@ -9,6 +9,20 @@ assert.equal(manifest.name, "inreview");
 assert.equal(manifest.displayName, "InReview");
 assert.deepEqual(manifest.extensionKind, ["workspace"]);
 assert.equal(manifest.main, "./dist/extension.js");
+assert.equal(manifest.version, "0.0.1");
+assert.equal(manifest.license, "UNLICENSED");
+assert.equal(
+  manifest.repository.url,
+  "git+https://github.com/will-j-wright/inreview.git",
+);
+assert.equal(
+  manifest.homepage,
+  "https://github.com/will-j-wright/inreview#readme",
+);
+assert.equal(
+  manifest.bugs.url,
+  "https://github.com/will-j-wright/inreview/issues",
+);
 assert.equal(manifest.capabilities.untrustedWorkspaces.supported, "limited");
 assert.equal(manifest.capabilities.virtualWorkspaces.supported, false);
 assert.equal("enabledApiProposals" in manifest, false);
@@ -77,6 +91,9 @@ for (const excluded of [
   ".jj/**",
   ".test-work/**",
   ".verification/**",
+  "**/*.map",
+  "**/*.lock",
+  "**/*.vsix",
   "AGENTS.md",
   "vitest.config.mjs",
   "package-lock.json",
@@ -89,6 +106,7 @@ for (const excluded of [
 
 const packageFiles = await listFiles({ packagedDependencies: [] });
 assert.deepEqual(packageFiles.sort(), [
+  "CHANGELOG.md",
   "README.md",
   "dist/extension.js",
   "media/inreview.svg",

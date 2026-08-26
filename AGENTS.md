@@ -5,6 +5,8 @@
 InReview is a workspace VS Code extension that reviews local jj change stacks. It captures immutable diff snapshots, stores review comments locally, and exposes a narrow tokenless loopback MCP server for GitHub Copilot CLI.
 
 Read `README.md` and the relevant production modules before changing behavior.
+Keep compatibility with jj 0.44 and newer. Do not require a newer jj release
+without a documented product decision and compatibility tests.
 
 ## Version control
 
@@ -37,6 +39,10 @@ Keep domain, storage, jj, and review services independent of `vscode`. Put VS Co
 - Treat snapshots and original comment anchors as immutable.
 - Publish snapshot blobs and manifests under one store transaction. Never expose a record that references missing blobs.
 - Serialize writes per repository. Nested mutation acquisition must fail rather than deadlock.
+- Keep jj process execution bounded. The default executor limit is four
+  concurrent processes. Snapshot work must use the existing bounded helpers.
+- Keep MCP runtime lifecycle operations serialized. Do not bypass the review
+  store's in-process write queue or cross-process repository lease.
 - Keep only exact, unique comment projections current. Ambiguous or missing targets become outdated.
 - Allow line comments only on added or unchanged new-side hunk lines. Never allow deleted-line comments.
 - Keep Agent messages immutable. Batch resolution must validate every thread before changing any thread.
@@ -70,7 +76,11 @@ Keep domain, storage, jj, and review services independent of `vscode`. Put VS Co
 - Review state belongs under `ExtensionContext.globalStorageUri`, never in the user's repository.
 - Do not add telemetry.
 - Never log comment bodies, file contents, request bodies, or complete local storage paths.
-- Keep `.test-work`, `.verification`, tests, source maps, lockfiles, and generated VSIX files out of the packaged extension.
+- Keep the VSIX allowlist exact: `package.json`, `README.md`, `CHANGELOG.md`,
+  `dist/extension.js`, and `media/inreview.svg`.
+- Keep `.git`, `.jj`, `AGENTS.md`, source, tests, source maps, lockfiles,
+  `.test-work`, `.verification`, local paths, temporary review data, and
+  generated VSIX files out of the packaged extension.
 - Preserve the archive-retention and blob-GC invariants when changing schemas.
 - Add a schema migration for every incompatible persisted-data change.
 

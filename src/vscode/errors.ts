@@ -1,5 +1,9 @@
 import { StorageError } from "../domain/errors";
-import { JjError } from "../jj/errors";
+import {
+  JjError,
+  JjExecutableNotFoundError,
+  JjExecutableSpawnError,
+} from "../jj/errors";
 import { CommentServiceError } from "../review/commentService";
 import { ReviewLifecycleError } from "../review/errors";
 
@@ -33,11 +37,26 @@ export function mapUserFacingError(error: unknown): UserFacingError {
     return { message: error.message, severity: "error" };
   }
   if (error instanceof JjError) {
+    if (error instanceof JjExecutableNotFoundError) {
+      return {
+        message: `${error.message} Restart VS Code after changing PATH, or set inreview.jj.path to an absolute path.`,
+        severity: "error",
+      };
+    }
+    if (error instanceof JjExecutableSpawnError) {
+      const permission =
+        error.systemCode === "EACCES" || error.systemCode === "EPERM";
+      return {
+        message: permission
+          ? `VS Code does not have permission to run the jj executable "${error.executable}". Check its permissions or set inreview.jj.path to an executable absolute path.`
+          : `${error.message} Check inreview.jj.path and the executable permissions.`,
+        severity: "error",
+      };
+    }
     const hints: Partial<Record<JjError["code"], string>> = {
-      "executable-not-found":
-        " Configure InReview: Jj Path with a supported jj executable.",
-      "unsupported-version": " Install the supported jj version.",
       "invalid-repository": " Open a folder inside one local jj repository.",
+      timeout:
+        " Check that jj can run in this workspace, then try again.",
       conflict: " Resolve the jj conflicts, then try again.",
       merge: " Select a contiguous single-parent stack.",
       "stale-selection":

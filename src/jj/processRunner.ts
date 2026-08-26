@@ -5,6 +5,7 @@ import {
   JjCancelledError,
   JjCommandError,
   JjExecutableNotFoundError,
+  JjExecutableSpawnError,
   JjOutputLimitError,
   JjTimeoutError,
 } from "./errors";
@@ -232,13 +233,19 @@ export class NodeProcessExecutor implements JjCommandExecutor {
 }
 
 function mapSpawnError(executable: string, error: unknown): Error {
+  const rawSystemCode =
+    typeof error === "object" && error !== null && "code" in error
+      ? (error as NodeJS.ErrnoException).code
+      : undefined;
+  const systemCode =
+    typeof rawSystemCode === "string" ? rawSystemCode : undefined;
   if (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    (error as NodeJS.ErrnoException).code === "ENOENT"
+    systemCode === "ENOENT"
   ) {
     return new JjExecutableNotFoundError(executable, { cause: error });
   }
-  return error instanceof Error ? error : new Error(String(error));
+  const detail = error instanceof Error ? error.message : String(error);
+  return new JjExecutableSpawnError(executable, systemCode, detail, {
+    cause: error,
+  });
 }
