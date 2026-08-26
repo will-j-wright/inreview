@@ -2,7 +2,7 @@
 
 ## Project
 
-InReview is a workspace VS Code extension that reviews local jj change stacks. It captures immutable diff snapshots, stores review comments locally, and exposes a narrow tokenless loopback MCP server for GitHub Copilot CLI.
+InReview is a workspace VS Code extension that reviews local jj change stacks. It captures immutable diff snapshots, stores review comments locally, and connects GitHub Copilot CLI through a narrow native per-user MCP bridge.
 
 Read `README.md` and the relevant production modules before changing behavior.
 Keep compatibility with jj 0.44 and newer. Do not require a newer jj release
@@ -27,7 +27,9 @@ without a documented product decision and compatibility tests.
 | `src/diff` | Byte-preserving Git patch parsing and file classification. |
 | `src/review` | Review lifecycle, mutation serialization, exact comment projection, and comment operations. |
 | `src/vscode` | Trees, commands, virtual documents, native diffs, and Comments API adapters. |
-| `src/mcp` | Loopback Streamable HTTP transport, session state, review tools, and Copilot CLI setup. |
+| `src/bridge` | Native bridge installation, extension IPC, workspace registration, and lifecycle. |
+| `src/mcp` | Review tool handlers, schemas, session binding, and Copilot CLI setup. |
+| `bridge` | Native Rust daemon, workspace router, bounded IPC, and MCP stdio frontend. |
 
 Keep domain, storage, jj, and review services independent of `vscode`. Put VS Code API calls in `src/vscode` or the extension composition root.
 
@@ -49,17 +51,19 @@ Keep domain, storage, jj, and review services independent of `vscode`. Put VS Co
 - Keep archived reviews read-only until restored.
 - Do not add fuzzy comment matching without an explicit product decision.
 
-## MCP constraints
+## MCP bridge constraints
 
-- Bind only to `127.0.0.1`.
-- Derive the default static port from the repository and environment fingerprint in the `41000`-`48999` range. An explicit `inreview.mcp.port` overrides it.
-- Treat every port collision as an error. Never select a random replacement. The static endpoint keeps Copilot setup valid across restarts, so v1 needs no bridge process.
-- Keep strict Host and present-Origin validation to prevent DNS rebinding.
-- Keep session isolation, limits, expiry, DELETE teardown, and clean shutdown.
-- The server is intentionally tokenless. Do not add bearer tokens, API keys, secret setup, or token rotation without an explicit product decision.
-- Expose only these tools: `connect_workspace`, `read_review_metadata`, `read_comments`, `reply_comment`, and `close_comments`.
+- Ship a native Rust executable. End users must not need Node.js, Rust, or another bridge runtime.
+- Build platform-specific VSIX packages that contain only the matching bridge binary.
+- Install a versioned binary and stable launcher under extension global storage, never in the repository.
+- Run one daemon per user and extension-host environment. Use a Unix-domain socket on Unix-like hosts and a named pipe on Windows. Do not open a TCP port or forward IPC between hosts.
+- Restrict the IPC endpoint to the current user. Keep the bridge tokenless unless an explicit product decision changes the security model.
+- Register only eligible trusted workspaces. Reject duplicate live registrations for the same canonical workspace.
+- Keep IPC messages runtime-validated, bounded, timed out, and free of file contents, comment bodies in logs, storage paths, stack traces, and secrets.
+- Keep MCP client sessions isolated. Bind each session to one live extension registration and make it stale when that registration disconnects or the active review changes.
+- Keep bridge and extension lifecycle operations serialized, reconnect with bounded backoff, and reject incompatible protocol versions.
+- Expose only these tools: `list_workspaces`, `connect_workspace`, `read_review_metadata`, `read_comments`, `reply_comment`, and `close_comments`.
 - Do not expose arbitrary file reads, file writes, shell execution, jj mutation, review refresh, or comment deletion through MCP.
-- A connected session must become stale when the active review changes.
 - Never return file contents, storage paths, stack traces, or secrets in MCP errors.
 
 ## VS Code constraints
@@ -77,7 +81,8 @@ Keep domain, storage, jj, and review services independent of `vscode`. Put VS Co
 - Do not add telemetry.
 - Never log comment bodies, file contents, request bodies, or complete local storage paths.
 - Keep the VSIX allowlist exact: `package.json`, `README.md`, `CHANGELOG.md`,
-  `dist/extension.js`, and `media/inreview.svg`.
+  `dist/extension.js`, the matching `dist/bridge/inreview-bridge` executable,
+  and `media/inreview.svg`.
 - Keep `.git`, `.jj`, `AGENTS.md`, source, tests, source maps, lockfiles,
   `.test-work`, `.verification`, local paths, temporary review data, and
   generated VSIX files out of the packaged extension.
@@ -91,6 +96,9 @@ Install dependencies:
 ```powershell
 npm ci
 ```
+
+Building and packaging also requires Rust 1.88 or newer. End users do not need
+Rust because each platform-specific VSIX includes the compiled bridge.
 
 Use focused checks while editing:
 
@@ -119,7 +127,7 @@ Do not run shared full-suite or VS Code host tests concurrently with another age
 - Add regression tests for every bug fix.
 - Use real temporary jj repositories for command and snapshot semantics.
 - Use fakes for deterministic storage failures, clocks, UUIDs, process errors, and MCP sessions.
-- Cover Windows path behavior and keep code portable to Linux, macOS, and same-distribution WSL.
+- Cover Windows path behavior and keep code portable across local, WSL, SSH, Dev Container, and Tunnel extension hosts.
 - Test both success and failure atomicity. A failure must not publish partial state or report success.
 - Inspect the VSIX file list after packaging.
 

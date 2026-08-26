@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ReviewRecord } from "../../src/domain/comments";
@@ -21,10 +20,7 @@ import {
   replyCommentOutputSchema,
 } from "../../src/mcp/schemas";
 import { createMcpToolSessionContext } from "../../src/mcp/toolContext";
-import {
-  createMcpReviewToolHandlers,
-  registerMcpReviewTools,
-} from "../../src/mcp/tools";
+import { createMcpReviewToolHandlers } from "../../src/mcp/tools";
 import { ReviewStore } from "../../src/storage";
 import { makeReviewRecord } from "./storageFixtures";
 
@@ -43,22 +39,6 @@ afterEach(async () => {
 });
 
 describe("MCP workspace connection", () => {
-  it("registers all tools with the SDK 1.30 McpServer API", async () => {
-    const harness = await createHarness();
-    const server = new McpServer({ name: "mcp-tool-test", version: "1.0.0" });
-    try {
-      expect(() => {
-        registerMcpReviewTools(server, {
-          service: harness.service,
-          session: createMcpToolSessionContext(),
-        });
-      }).not.toThrow();
-    } finally {
-      await server.close();
-      await harness.close();
-    }
-  });
-
   it("normalizes the platform path, rejects wrong and traversal paths, and reports no active review", async () => {
     const harness = await createHarness(false);
     try {
@@ -85,7 +65,9 @@ describe("MCP workspace connection", () => {
           })
         ).structuredContent,
       );
-      expect(differentCase.status).toBe("no_active_review");
+      expect(differentCase.status).toBe(
+        process.platform === "win32" ? "no_active_review" : "error",
+      );
 
       const relative = connectWorkspaceOutputSchema.parse(
         (

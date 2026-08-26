@@ -107,7 +107,7 @@ export class NativeDiffContent implements VirtualDocumentSource {
       snapshotId: identity.snapshotId,
       view: identity.view,
       fileId: identity.fileId,
-      readOnly: true,
+      readOnly: identity.readOnly,
     });
     const expected =
       identity.side === "original" ? resolved.original : resolved.modified;
@@ -230,6 +230,7 @@ function identityFor(
     fileId: request.fileId,
     side,
     repositoryPath,
+    readOnly: request.readOnly,
   };
 }
 

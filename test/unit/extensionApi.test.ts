@@ -6,7 +6,7 @@ describe("extension API policy", () => {
   it("exports no review, secret storage, or MCP runtime internals in production", () => {
     const internalApi = {
       getExtensionReviewPorts: () => ({ service: {}, secrets: {} }),
-      getMcpRuntime: () => ({}),
+      getBridgeRuntime: () => ({}),
     };
 
     const productionApi = selectExtensionApi(true, internalApi);

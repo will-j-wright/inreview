@@ -17,7 +17,7 @@ export const commandDefinitions = [
   { id: "inreview.reopenComment", title: "Reopen Comment" },
   {
     id: "inreview.copyCopilotCliMcpSetup",
-    title: "Copy Copilot CLI MCP Setup",
+    title: "Copy InReview MCP Setup",
   },
-  { id: "inreview.showMcpServerStatus", title: "Show MCP Server Status" },
+  { id: "inreview.showMcpServerStatus", title: "Show MCP Bridge Status" },
 ] as const satisfies readonly CommandDefinition[];

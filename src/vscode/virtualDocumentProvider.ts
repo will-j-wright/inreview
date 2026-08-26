@@ -16,6 +16,7 @@ export interface VirtualDocumentIdentity {
   readonly fileId: string;
   readonly side: NativeDiffSide;
   readonly repositoryPath: string;
+  readonly readOnly: boolean;
 }
 
 export interface UriFactory {
@@ -38,11 +39,12 @@ export class InvalidVirtualDocumentUriError extends Error {
 }
 
 interface EncodedIdentityBase {
-  readonly v: 1;
+  readonly v: 2;
   readonly r: string;
   readonly s: string;
   readonly f: string;
   readonly d: NativeDiffSide;
+  readonly o: boolean;
 }
 
 type EncodedIdentity =
@@ -75,21 +77,23 @@ export class VirtualDocumentUriCodec {
     const encoded: EncodedIdentity =
       identity.view.mode === "combined"
         ? {
-            v: 1,
+            v: 2,
             r: identity.reviewId,
             s: identity.snapshotId,
             m: "combined",
             f: identity.fileId,
             d: identity.side,
+            o: identity.readOnly,
           }
         : {
-            v: 1,
+            v: 2,
             r: identity.reviewId,
             s: identity.snapshotId,
             m: "per-change",
             c: identity.view.changeId,
             f: identity.fileId,
             d: identity.side,
+            o: identity.readOnly,
           };
     // URI authorities are case-insensitive. Use lowercase hex so VS Code's
     // authority normalization cannot change the signed payload.
@@ -97,7 +101,7 @@ export class VirtualDocumentUriCodec {
     const signature = this.sign(scheme, payload, identity.repositoryPath);
     return this.#uriFactory.from({
       scheme,
-      authority: `v1.${payload}.${signature}`,
+      authority: `v2.${payload}.${signature}`,
       path: `/${identity.repositoryPath}`,
     });
   }
@@ -115,7 +119,7 @@ export class VirtualDocumentUriCodec {
       const parts = uri.authority.split(".");
       if (
         parts.length !== 3 ||
-        parts[0] !== "v1" ||
+        parts[0] !== "v2" ||
         parts[1] === undefined ||
         parts[2] === undefined ||
         parts[1].length % 2 !== 0 ||
@@ -156,6 +160,7 @@ export class VirtualDocumentUriCodec {
         fileId: encoded.f,
         side,
         repositoryPath,
+        readOnly: encoded.o,
       };
       validateIdentity(identity);
       return identity;
@@ -194,15 +199,16 @@ function parseEncodedIdentity(value: unknown): EncodedIdentity {
   const record = value as Record<string, unknown>;
   const allowed =
     record.m === "per-change"
-      ? ["v", "r", "s", "m", "c", "f", "d"]
-      : ["v", "r", "s", "m", "f", "d"];
+      ? ["v", "r", "s", "m", "c", "f", "d", "o"]
+      : ["v", "r", "s", "m", "f", "d", "o"];
   if (
     Object.keys(record).length !== allowed.length ||
     Object.keys(record).some((key) => !allowed.includes(key)) ||
-    record.v !== 1 ||
+    record.v !== 2 ||
     typeof record.r !== "string" ||
     typeof record.s !== "string" ||
     typeof record.f !== "string" ||
+    typeof record.o !== "boolean" ||
     (record.m !== "combined" && record.m !== "per-change") ||
     (record.m === "per-change" && typeof record.c !== "string")
   ) {
@@ -214,12 +220,13 @@ function parseEncodedIdentity(value: unknown): EncodedIdentity {
   }
   if (record.m === "combined") {
     return {
-      v: 1,
+      v: 2,
       r: record.r,
       s: record.s,
       m: "combined",
       f: record.f,
       d: side,
+      o: record.o,
     };
   }
   const changeId = record.c;
@@ -227,13 +234,14 @@ function parseEncodedIdentity(value: unknown): EncodedIdentity {
     throw new InvalidVirtualDocumentUriError();
   }
   return {
-    v: 1,
+    v: 2,
     r: record.r,
     s: record.s,
     m: "per-change",
     c: changeId,
     f: record.f,
     d: side,
+    o: record.o,
   };
 }
 
@@ -241,6 +249,7 @@ function validateIdentity(identity: VirtualDocumentIdentity): void {
   if (
     !isUuid(identity.reviewId) ||
     !isUuid(identity.snapshotId) ||
+    typeof identity.readOnly !== "boolean" ||
     !isIdentifier(identity.fileId) ||
     (identity.view.mode === "per-change" &&
       !isIdentifier(identity.view.changeId))

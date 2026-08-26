@@ -373,27 +373,6 @@ export const closeCommentsOutputSchema = z.discriminatedUnion("status", [
   errorOutputSchema,
 ]);
 
-export const connectWorkspaceRegistrationOutputSchema =
-  registrationOutputSchema(connectWorkspaceOutputSchema, [
-    "connected",
-    "no_active_review",
-    "error",
-  ]);
-export const readReviewMetadataRegistrationOutputSchema =
-  registrationOutputSchema(readReviewMetadataOutputSchema, ["success", "error"]);
-export const readCommentsRegistrationOutputSchema = registrationOutputSchema(
-  readCommentsOutputSchema,
-  ["success", "error"],
-);
-export const replyCommentRegistrationOutputSchema = registrationOutputSchema(
-  replyCommentOutputSchema,
-  ["success", "error"],
-);
-export const closeCommentsRegistrationOutputSchema = registrationOutputSchema(
-  closeCommentsOutputSchema,
-  ["success", "error"],
-);
-
 export type McpToolError = z.infer<typeof mcpToolErrorSchema>;
 export type ConnectWorkspaceInput = z.infer<typeof connectWorkspaceInputSchema>;
 export type ReadCommentsInput = z.infer<typeof readCommentsInputSchema>;
@@ -442,22 +421,4 @@ function isRepositoryRelativePath(value: string): boolean {
     segments.every((segment) => segment.length > 0 && segment !== "." && segment !== "..") &&
     !value.endsWith("/")
   );
-}
-
-function registrationOutputSchema<T extends object>(
-  schema: z.ZodType<T>,
-  statuses: readonly [string, ...string[]],
-) {
-  return z
-    .object({ status: z.enum(statuses) })
-    .catchall(z.unknown())
-    .superRefine((value, context) => {
-      const parsed = schema.safeParse(value);
-      if (!parsed.success) {
-        context.addIssue({
-          code: "custom",
-          message: "The tool output does not match its runtime schema.",
-        });
-      }
-    });
 }

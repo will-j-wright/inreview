@@ -1,4 +1,5 @@
 dist/
+bridge/target/
 node_modules/
 *.vsix
 *.log

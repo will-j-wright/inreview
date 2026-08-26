@@ -57,6 +57,7 @@ describe("virtual native diff URIs", () => {
     fileId: "rename",
     side: "modified",
     repositoryPath: "src/new name.ts",
+    readOnly: false,
   };
 
   it("round-trips every target field with a path-like suffix", () => {
@@ -76,7 +77,7 @@ describe("virtual native diff URIs", () => {
     ["wrong scheme", (uri: TestUri) => ({ ...uri, scheme: "file" })],
     ["query", (uri: TestUri) => ({ ...uri, query: "token=secret" })],
     ["fragment", (uri: TestUri) => ({ ...uri, fragment: "changed" })],
-    ["malformed authority", (uri: TestUri) => ({ ...uri, authority: "v1.bad" })],
+    ["malformed authority", (uri: TestUri) => ({ ...uri, authority: "v2.bad" })],
   ])("rejects a %s URI", (_name, mutate) => {
     const uri = codec.encode(identity) as unknown as TestUri;
     expect(() => codec.decode(mutate(uri) as never)).toThrow(

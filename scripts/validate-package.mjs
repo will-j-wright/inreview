@@ -4,12 +4,25 @@ import { access, readFile } from "node:fs/promises";
 import { listFiles } from "@vscode/vsce";
 
 const manifest = JSON.parse(await readFile("package.json", "utf8"));
+const bridgeManifest = await readFile("bridge/Cargo.toml", "utf8");
+const bridgeProtocol = await readFile("src/bridge/protocol.ts", "utf8");
 
 assert.equal(manifest.name, "inreview");
 assert.equal(manifest.displayName, "InReview");
 assert.deepEqual(manifest.extensionKind, ["workspace"]);
 assert.equal(manifest.main, "./dist/extension.js");
 assert.equal(manifest.version, "0.0.1");
+assert.match(
+  bridgeManifest,
+  new RegExp(`^version = "${manifest.version.replaceAll(".", "\\.")}"$`, "mu"),
+);
+assert.match(
+  bridgeProtocol,
+  new RegExp(
+    `^export const BRIDGE_VERSION = "${manifest.version.replaceAll(".", "\\.")}";$`,
+    "mu",
+  ),
+);
 assert.equal(manifest.license, "UNLICENSED");
 assert.equal(
   manifest.repository.url,
@@ -40,7 +53,7 @@ assert.ok(commands.every((command) => command.startsWith("inreview.")));
 const activationEvents = new Set(manifest.activationEvents);
 assert.ok(
   activationEvents.has("onStartupFinished"),
-  "InReview must activate after startup so its MCP server is available before a view or command is opened.",
+  "InReview must activate after startup so its workspace registers with the MCP bridge.",
 );
 for (const command of commands) {
   assert.ok(
@@ -81,6 +94,11 @@ for (const command of [
 
 await Promise.all([
   access("dist/extension.js"),
+  access(
+    process.platform === "win32"
+      ? "dist/bridge/inreview-bridge.exe"
+      : "dist/bridge/inreview-bridge",
+  ),
   access("media/inreview.svg"),
   access(".vscodeignore"),
 ]);
@@ -95,6 +113,7 @@ for (const excluded of [
   "**/*.lock",
   "**/*.vsix",
   "AGENTS.md",
+  "bridge/**",
   "vitest.config.mjs",
   "package-lock.json",
 ]) {
@@ -108,6 +127,9 @@ const packageFiles = await listFiles({ packagedDependencies: [] });
 assert.deepEqual(packageFiles.sort(), [
   "CHANGELOG.md",
   "README.md",
+  process.platform === "win32"
+    ? "dist/bridge/inreview-bridge.exe"
+    : "dist/bridge/inreview-bridge",
   "dist/extension.js",
   "media/inreview.svg",
   "package.json",

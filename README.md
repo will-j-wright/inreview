@@ -2,7 +2,7 @@
 
 InReview is a VS Code extension for reviewing local [Jujutsu (`jj`)](https://jj-vcs.github.io/jj/latest/) changes without opening a pull request.
 
-Select the latest `X` changes, inspect their combined or per-change diffs in VS Code, and leave comments on the new side of the diff. A local MCP server lets GitHub Copilot CLI read those comments, reply to them, and resolve them after it updates the code.
+Select the latest `X` changes, inspect their combined or per-change diffs in VS Code, and leave comments on the new side of the diff. A native local MCP bridge lets GitHub Copilot CLI read those comments, reply to them, and resolve them after it updates the code.
 
 > InReview is an experimental local build. It is not published to the VS Code Marketplace.
 
@@ -16,18 +16,22 @@ Select the latest `X` changes, inspect their combined or per-change diffs in VS 
 - Refresh a review after jj rewrites while keeping exact comment history.
 - Keep unmatched comments as outdated threads linked to their original snapshot.
 - Archive and restore local reviews.
-- Connect GitHub Copilot CLI through a loopback MCP server.
+- Connect GitHub Copilot CLI once through a native per-user MCP bridge.
 
 ## Requirements
 
 - VS Code 1.96 or newer.
 - `jj` 0.44 or newer available to the VS Code extension host.
-- A trusted local workspace containing one jj repository.
+- A trusted file-system workspace containing one jj repository.
 - GitHub Copilot CLI if you want agent review support.
 
-Local Windows, Linux, and macOS workspaces are supported. Same-distribution
-VS Code WSL workspaces are also supported. SSH workspaces, dev containers, and
-cross-host Windows-to-WSL connections are not supported.
+The packaged extension includes the native bridge executable. End users do not
+need Node.js, Rust, or another bridge runtime.
+
+Local and remote extension hosts are supported when the matching native VSIX
+can run there. This includes WSL, SSH, Dev Containers, and VS Code Tunnels. Run
+GitHub Copilot CLI in the same extension-host environment as InReview. The
+bridge does not forward IPC between hosts.
 
 If VS Code cannot find `jj`, restart every VS Code window after changing `PATH`, or set **InReview: Jj Path** to the absolute executable path.
 
@@ -38,8 +42,11 @@ Build and install:
 ```powershell
 npm ci
 npm run package:vsix
-code --install-extension .\inreview-0.0.1.vsix --force
+code --install-extension .\inreview-<target>-0.0.1.vsix --force
 ```
+
+Building a VSIX requires Rust 1.88 or newer. `<target>` is the current native
+platform, such as `linux-x64`, `darwin-arm64`, or `win32-x64`.
 
 Reload VS Code after installation.
 
@@ -84,47 +91,47 @@ deleted. Agent replies are immutable. Resolved threads can be reopened.
 
 ## Connect GitHub Copilot CLI
 
-The extension activates after VS Code startup. Its MCP server starts
-automatically when the window contains one supported jj repository, the
-workspace is trusted, and `inreview.mcp.enabled` is on. Opening an InReview
-view or running a command is not required.
+The extension installs its packaged native bridge in stable extension storage.
+One per-user bridge daemon serves every eligible InReview window in the same
+extension-host environment. Each trusted window registers its canonical
+workspace over a user-restricted Unix-domain socket or Windows named pipe.
+InReview does not open a TCP port.
 
-By default, InReview derives a static port in the `41000`-`48999` range from
-the canonical repository and extension-host environment fingerprint. Each
-repository therefore gets a deterministic endpoint that stays valid across
-VS Code restarts in the same environment. Set `inreview.mcp.port` to use a
-different fixed port. This explicit value always overrides the derived port.
-If either port is in use, the server enters an error state. InReview never
-selects a random fallback. Set an available override, then run **InReview:
-Copy Copilot CLI MCP Setup** again.
+The bridge starts automatically when a trusted window contains one supported
+jj repository and `inreview.mcp.enabled` is on. Opening an InReview view or
+running a command is not required.
 
-This deterministic endpoint is sufficient for v1, so InReview does not need a
-persistent port assignment or a separate bridge process.
-
-1. Run **InReview: Copy Copilot CLI MCP Setup**.
+1. Run **InReview: Copy InReview MCP Setup**.
 2. Select either the `copilot mcp add` command or the `mcp-config.json` fragment.
-3. Paste the result into GitHub Copilot CLI in the same local or WSL environment.
+3. Paste the result into GitHub Copilot CLI once in the same extension-host environment.
 4. Use `/mcp show` to confirm the server connection.
 
 The copied command has this shape:
 
 ```text
-copilot mcp add --transport http --tools "connect_workspace,read_review_metadata,read_comments,reply_comment,close_comments" <server-name> http://127.0.0.1:<port>/mcp
+copilot mcp add --tools "list_workspaces,connect_workspace,read_review_metadata,read_comments,reply_comment,close_comments" inreview -- "<native-launcher>"
 ```
 
-Then ask the agent to connect to the absolute workspace root and review the open comments.
+The `inreview` entry discovers every workspace registered in that environment.
+You do not need one MCP entry per repository. Ask the agent to list the open
+workspaces, connect to one returned absolute root, and review its open comments.
 
 ### MCP tools
 
 | Tool | Purpose |
 | --- | --- |
+| `list_workspaces` | List canonical roots and host platforms registered with the bridge. |
 | `connect_workspace` | Bind the MCP session to the exact workspace root and active review. |
 | `read_review_metadata` | Read selected changes, snapshots, file metadata, and comment counts. |
 | `read_comments` | Read filtered current, outdated, open, or resolved threads. |
 | `reply_comment` | Reply to one open thread as `Agent` without resolving it. |
 | `close_comments` | Atomically resolve one or more open threads with optional resolution notes. |
 
-The server binds only to `127.0.0.1`. It has no bearer token. Strict Host and Origin validation, MCP session isolation, request limits, and a narrow tool surface remain enforced. Any local process can reach a loopback port, so do not use this server for untrusted multi-user environments.
+The bridge uses no bearer token. It restricts its socket or named pipe to the
+current user, validates bounded messages, isolates MCP sessions, and exposes
+only the six tools above. The bridge routes operations to the registered
+extension process; it cannot read arbitrary files, run shell commands, or run
+jj. Do not use it in an untrusted shared-user environment.
 
 ## Commands
 
@@ -143,8 +150,8 @@ Use the Command Palette or the matching view and comment actions.
 | **InReview: Add File Comment** | Add a comment that applies to the whole file. |
 | **InReview: Resolve Comment** / **Reopen Comment** | Change a thread's resolution state. |
 | **InReview: Submit/Edit/Save/Cancel/Delete Comment** | Manage user comments through VS Code's Comments UI. |
-| **InReview: Copy Copilot CLI MCP Setup** | Copy a tokenless command or JSON MCP configuration. |
-| **InReview: Show MCP Server Status** | Show the endpoint, state, and setup actions. |
+| **InReview: Copy InReview MCP Setup** | Copy the one-time native stdio command or JSON MCP configuration. |
+| **InReview: Show MCP Bridge Status** | Show the native bridge installation and workspace registration state. |
 
 ## Views
 
@@ -157,7 +164,7 @@ immutable file snapshots, review metadata, and comments. It is never written
 into the repository. InReview uses compressed content-addressed blobs,
 serializes writes per repository, retains the latest 20 archived reviews, and
 garbage-collects unreferenced blobs. It sends no telemetry and makes no network
-requests other than the tokenless loopback MCP traffic that you configure.
+requests. MCP traffic stays on a local per-user socket or named pipe.
 
 ## Settings
 
@@ -166,8 +173,7 @@ requests other than the tokenless loopback MCP traffic that you configure.
 | `inreview.jj.path` | `jj` | Command name or absolute path for the jj executable. |
 | `inreview.review.defaultChangeCount` | `1` | Initial value for the Last `X` prompt. |
 | `inreview.review.largeDiffWarningLines` | `10000` | Changed-line count that requires confirmation. |
-| `inreview.mcp.enabled` | `true` | Start the local MCP server for an eligible workspace. |
-| `inreview.mcp.port` | unset | Optional fixed loopback port override. The default is a deterministic repository port from `41000` to `48999`. |
+| `inreview.mcp.enabled` | `true` | Register an eligible trusted workspace with the native MCP bridge. |
 | `inreview.logging.level` | `info` | Output-channel logging threshold. |
 
 ## Current limitations
@@ -177,12 +183,12 @@ requests other than the tokenless loopback MCP traffic that you configure.
 - Merge changes and unresolved conflicts are rejected.
 - No comments on deleted lines.
 - Native per-file diffs rather than VS Code's proposed multi-file diff API.
-- No SSH workspaces, dev containers, or cross-host WSL forwarding.
+- No bridge forwarding between local and remote extension hosts.
 - No cloud synchronization or shared review server.
-- The MCP endpoint has no authentication. Other processes on the same machine
-  can connect to its loopback port.
-- Linux, macOS, and WSL are supported targets but were not manually exercised
-  for the 0.0.1 release.
+- The bridge has no application token. Its local IPC endpoint relies on the
+  current user's operating-system access controls.
+- Linux, macOS, WSL, SSH, Dev Container, and Tunnel extension hosts are
+  supported targets but were not all manually exercised for the 0.0.1 release.
 
 ## Development
 

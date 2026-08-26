@@ -10,10 +10,12 @@
   symbolic-link files.
 - Add line and file comments, refresh after rewrites, keep unmatched comments
   as outdated, and archive or restore reviews.
-- Let GitHub Copilot CLI read, reply to, and resolve comments through a
-  tokenless loopback MCP server.
-- Start MCP after VS Code startup on a deterministic per-repository port from
-  `41000` to `48999`, with an explicit fixed-port override.
+- Let GitHub Copilot CLI read, reply to, and resolve comments through a native
+  per-user MCP bridge.
+- Register every eligible workspace with one local bridge over a Unix-domain
+  socket or Windows named pipe, with one global stdio MCP configuration.
+- Discover registered open workspaces through the read-only `list_workspaces`
+  MCP tool before binding a client session.
 - Store immutable snapshots and comments in local VS Code extension storage.
 
 ### Limitations
@@ -23,9 +25,14 @@
 - Supports only contiguous, single-parent stacks that end at `@`. Merges and
   unresolved selected conflicts are rejected.
 - Deleted lines cannot receive line comments. Use a file comment instead.
-- The MCP server has no authentication. Do not use it in an untrusted
-  multi-user environment.
+- The MCP bridge relies on per-user operating-system IPC permissions and has no
+  application token. Do not use it in an untrusted shared-user environment.
 - There is no cloud synchronization, shared review server, Marketplace release,
-  SSH workspace support, dev-container support, or cross-host WSL forwarding.
-- Windows received full release verification. Linux, macOS, and WSL remain
-  manual platform-validation gaps.
+  or bridge forwarding between local and remote extension hosts.
+- Windows received full release verification. Linux, macOS, WSL, SSH, Dev
+  Container, and Tunnel extension hosts remain manual platform-validation gaps.
+
+### Fixed
+
+- Prevent host-injected Copilot CLI arguments from reaching the fixed native
+  bridge command and breaking MCP initialization.

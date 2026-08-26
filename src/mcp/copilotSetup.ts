@@ -1,8 +1,7 @@
-import path from "node:path";
-
-import type { McpRuntimeStatus } from "./runtime";
+import type { BridgeRuntimeStatus } from "../bridge";
 
 export const COPILOT_ALLOWED_TOOLS = [
+  "list_workspaces",
   "connect_workspace",
   "read_review_metadata",
   "read_comments",
@@ -12,11 +11,11 @@ export const COPILOT_ALLOWED_TOOLS = [
 
 const COMMAND_CHOICE = "Copilot CLI command";
 const JSON_CHOICE = "~/.copilot/mcp-config.json fragment";
-const START_ACTION = "Start MCP Server";
+const RECONNECT_ACTION = "Reconnect Bridge";
 const OPEN_OUTPUT_ACTION = "Open InReview Output";
 
 export interface CopilotSetupRuntime {
-  readonly status: McpRuntimeStatus;
+  readonly status: BridgeRuntimeStatus;
   restart(): Promise<void>;
 }
 
@@ -27,11 +26,6 @@ export interface CopilotSetupUi {
   ): Promise<string | undefined>;
   showInformationMessage(
     message: string,
-    ...actions: readonly string[]
-  ): Promise<string | undefined>;
-  showWarningMessage(
-    message: string,
-    options: { readonly modal: boolean; readonly detail?: string },
     ...actions: readonly string[]
   ): Promise<string | undefined>;
   showErrorMessage(
@@ -47,9 +41,7 @@ export interface CopilotSetupControllerOptions {
   readonly ui: CopilotSetupUi;
   readonly eligible: boolean;
   readonly unavailableReason?: string;
-  readonly canonicalRepositoryRoot?: string;
-  readonly repositoryFingerprint?: string;
-  readonly isWsl: boolean;
+  readonly launcherPath?: string;
 }
 
 export class CopilotSetupController {
@@ -58,33 +50,31 @@ export class CopilotSetupController {
   ) {}
 
   public async copySetup(): Promise<void> {
-    if (!this.requireEligible() || !(await this.ensureRunning())) {
+    if (
+      !this.options.eligible ||
+      this.options.launcherPath === undefined
+    ) {
+      await this.options.ui.showErrorMessage(
+        this.options.unavailableReason ??
+          "The InReview bridge is unavailable in this environment.",
+      );
       return;
     }
     const choice = await this.options.ui.showQuickPick(
       [COMMAND_CHOICE, JSON_CHOICE],
       {
-        title: "Copy Copilot CLI MCP Setup",
-        placeHolder: "Choose a user-managed Copilot CLI setup format.",
+        title: "Copy InReview MCP Setup",
+        placeHolder: "Choose a one-time Copilot CLI setup format.",
       },
     );
     if (choice !== COMMAND_CHOICE && choice !== JSON_CHOICE) {
       return;
     }
-
-    const status = this.options.runtime.status;
-    if (status.state !== "running") {
-      await this.options.ui.showErrorMessage(
-        "The MCP server stopped before setup could be copied. Start it and try again.",
-      );
-      return;
-    }
-    const identity = this.repositoryIdentity();
+    const value =
+      choice === COMMAND_CHOICE
+        ? buildCopilotMcpCommand(this.options.launcherPath)
+        : buildCopilotMcpConfig(this.options.launcherPath);
     try {
-      const value =
-        choice === COMMAND_CHOICE
-          ? buildCopilotMcpCommand(identity.serverName, status.endpoint)
-          : buildCopilotMcpConfig(identity.serverName, status.endpoint);
       await this.options.ui.writeClipboard(value);
     } catch {
       await this.options.ui.showErrorMessage(
@@ -93,39 +83,29 @@ export class CopilotSetupController {
       return;
     }
     await this.options.ui.showInformationMessage(
-      this.options.isWsl
-        ? "Copied. Use this setup with Copilot CLI in this same WSL distribution while this VS Code window and MCP server are running."
-        : "Copied. Use this setup with Copilot CLI in this same local environment while this VS Code window and MCP server are running.",
+      "Copied. Add this MCP server once. It discovers every open workspace registered by InReview.",
     );
   }
 
   public async showStatus(): Promise<void> {
-    const identity = this.repositoryIdentityOrUndefined();
     const status = this.options.runtime.status;
     const lines = [
-      `MCP enabled: ${status.state === "disabled" ? "No" : "Yes"}`,
+      `Bridge enabled: ${status.state === "disabled" ? "No" : "Yes"}`,
       `State: ${status.state}`,
-      `Endpoint: ${status.state === "running" ? status.endpoint : "not running"}`,
-      `Connected sessions: ${status.state === "running" ? String(status.sessionCount) : "0"}`,
-      `Repository: ${identity?.repositoryName ?? "unavailable"}`,
-      `Server name: ${identity?.serverName ?? "unavailable"}`,
-      `Repository identity: ${identity?.shortFingerprint ?? "unavailable"}`,
+      `Connected MCP sessions: ${status.state === "registered" ? String(status.sessionCount) : "0"}`,
+      `Launcher: ${this.options.launcherPath === undefined ? "unavailable" : "installed"}`,
     ];
     if (status.state === "error") {
       lines.push(`Error: ${status.message}`);
-    } else if (status.state === "stopped") {
-      lines.push("Action required: Start the MCP server.");
     } else if (status.state === "disabled") {
       lines.push(
-        this.options.eligible
-          ? "Action required: Enable InReview: MCP Enabled."
-          : `Action required: ${this.options.unavailableReason ?? "Open one trusted local jj workspace."}`,
+        `Action required: ${this.options.unavailableReason ?? "Enable InReview MCP in a trusted local workspace."}`,
       );
     }
 
     const actions =
-      status.state === "stopped" || status.state === "error"
-        ? [START_ACTION, OPEN_OUTPUT_ACTION]
+      status.state === "error" || status.state === "disconnected"
+        ? [RECONNECT_ACTION, OPEN_OUTPUT_ACTION]
         : status.state === "disabled"
           ? [OPEN_OUTPUT_ACTION]
           : [];
@@ -138,150 +118,41 @@ export class CopilotSetupController {
           );
     if (selection === OPEN_OUTPUT_ACTION) {
       this.options.ui.showOutput();
-    } else if (selection === START_ACTION && (await this.ensureRunning(false))) {
+    } else if (selection === RECONNECT_ACTION) {
+      await this.options.runtime.restart();
+      const next = this.options.runtime.status;
       await this.options.ui.showInformationMessage(
-        "The InReview MCP server is running.",
+        next.state === "registered"
+          ? "The workspace is registered with the InReview bridge."
+          : "The workspace could not register with the InReview bridge.",
       );
     }
   }
-
-  private requireEligible(): boolean {
-    if (
-      this.options.eligible &&
-      this.options.canonicalRepositoryRoot !== undefined &&
-      this.options.repositoryFingerprint !== undefined
-    ) {
-      return true;
-    }
-    void this.options.ui.showErrorMessage(
-      this.options.unavailableReason ??
-        "Open one trusted local jj workspace before using the InReview MCP server.",
-    );
-    return false;
-  }
-
-  private async ensureRunning(offer = true): Promise<boolean> {
-    let status = this.options.runtime.status;
-    if (status.state === "running") {
-      return true;
-    }
-    if (status.state === "disabled") {
-      await this.options.ui.showErrorMessage(
-        this.options.eligible
-          ? "The MCP server is disabled. Enable InReview: MCP Enabled and try again."
-          : this.options.unavailableReason ??
-              "Open one trusted local jj workspace and try again.",
-      );
-      return false;
-    }
-    if (offer) {
-      const action = await this.options.ui.showWarningMessage(
-        status.state === "error"
-          ? status.message
-          : "The InReview MCP server is stopped.",
-        { modal: true, detail: "Start the local server before copying setup." },
-        START_ACTION,
-      );
-      if (action !== START_ACTION) {
-        return false;
-      }
-    }
-    await this.options.runtime.restart();
-    status = this.options.runtime.status;
-    if (status.state !== "running") {
-      await this.options.ui.showErrorMessage(
-        status.state === "error"
-          ? status.message
-          : "The InReview MCP server did not start.",
-        OPEN_OUTPUT_ACTION,
-      ).then((selection) => {
-        if (selection === OPEN_OUTPUT_ACTION) {
-          this.options.ui.showOutput();
-        }
-      });
-      return false;
-    }
-    return true;
-  }
-
-  private repositoryIdentity(): RepositoryIdentity {
-    const identity = this.repositoryIdentityOrUndefined();
-    if (identity === undefined) {
-      throw new Error("The repository identity is unavailable.");
-    }
-    return identity;
-  }
-
-  private repositoryIdentityOrUndefined(): RepositoryIdentity | undefined {
-    if (
-      this.options.canonicalRepositoryRoot === undefined ||
-      this.options.repositoryFingerprint === undefined
-    ) {
-      return undefined;
-    }
-    const repositoryName =
-      path.basename(this.options.canonicalRepositoryRoot) || "repository";
-    const shortFingerprint = safeFingerprint(
-      this.options.repositoryFingerprint,
-    );
-    return {
-      repositoryName,
-      shortFingerprint,
-      serverName: createCopilotServerName(
-        repositoryName,
-        this.options.repositoryFingerprint,
-      ),
-    };
-  }
 }
 
-interface RepositoryIdentity {
-  readonly repositoryName: string;
-  readonly shortFingerprint: string;
-  readonly serverName: string;
-}
-
-export function createCopilotServerName(
-  repositoryBasename: string,
-  fingerprint: string,
-): string {
-  const shortFingerprint = safeFingerprint(fingerprint);
-  const maximumBaseLength = 64 - "inreview--".length - shortFingerprint.length;
-  const sanitized =
-    repositoryBasename
-      .normalize("NFKD")
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/gu, "-")
-      .replace(/^-+|-+$/gu, "")
-      .slice(0, maximumBaseLength)
-      .replace(/-+$/gu, "") || "repository";
-  return `inreview-${sanitized}-${shortFingerprint}`;
-}
-
-export function buildCopilotMcpCommand(
-  serverName: string,
-  endpoint: string,
-): string {
-  validateSetupInputs(serverName, endpoint);
+export function buildCopilotMcpCommand(launcherPath: string): string {
+  validateLauncherPath(launcherPath);
+  const invocation = launcherInvocation(launcherPath);
   return [
-    "copilot mcp add --transport http",
+    "copilot mcp add",
     `--tools "${COPILOT_ALLOWED_TOOLS.join(",")}"`,
-    serverName,
-    `"${endpoint}"`,
+    "inreview",
+    "--",
+    quoteCommandArgument(invocation.command),
+    ...invocation.args.map(quoteCommandArgument),
   ].join(" ");
 }
 
-export function buildCopilotMcpConfig(
-  serverName: string,
-  endpoint: string,
-): string {
-  validateSetupInputs(serverName, endpoint);
+export function buildCopilotMcpConfig(launcherPath: string): string {
+  validateLauncherPath(launcherPath);
+  const invocation = launcherInvocation(launcherPath);
   return JSON.stringify(
     {
       mcpServers: {
-        [serverName]: {
-          type: "http",
-          url: endpoint,
+        inreview: {
+          type: "stdio",
+          command: invocation.command,
+          args: invocation.args,
           tools: [...COPILOT_ALLOWED_TOOLS],
         },
       },
@@ -291,34 +162,41 @@ export function buildCopilotMcpConfig(
   );
 }
 
-function validateSetupInputs(serverName: string, endpoint: string): void {
-  if (!/^inreview-[a-z0-9-]{1,46}-[a-z0-9]{8}$/u.test(serverName)) {
-    throw new Error("The Copilot MCP server name is invalid.");
-  }
-  let url: URL;
-  try {
-    url = new URL(endpoint);
-  } catch {
-    throw new Error("The MCP endpoint is invalid.");
-  }
+function launcherInvocation(launcherPath: string): {
+  readonly command: string;
+  readonly args: readonly string[];
+} {
+  return process.platform === "win32"
+    ? {
+        command: process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
+        args: ["/d", "/s", "/c", launcherPath],
+      }
+    : { command: launcherPath, args: [] };
+}
+
+function validateLauncherPath(launcherPath: string): void {
   if (
-    url.protocol !== "http:" ||
-    url.hostname !== "127.0.0.1" ||
-    url.port === "" ||
-    url.pathname !== "/mcp" ||
-    url.search !== "" ||
-    url.hash !== "" ||
-    url.username !== "" ||
-    url.password !== ""
+    launcherPath.length === 0 ||
+    launcherPath.length > 32_768 ||
+    hasControlCharacters(launcherPath)
   ) {
-    throw new Error("The MCP endpoint must be the loopback /mcp endpoint.");
+    throw new Error("The InReview bridge launcher path is invalid.");
   }
 }
 
-function safeFingerprint(fingerprint: string): string {
-  const normalized = fingerprint.toLowerCase().replace(/[^a-z0-9]/gu, "");
-  if (normalized.length < 8) {
-    throw new Error("The repository fingerprint is invalid.");
+function hasControlCharacters(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) {
+      return true;
+    }
   }
-  return normalized.slice(0, 8);
+  return false;
+}
+
+function quoteCommandArgument(value: string): string {
+  if (process.platform === "win32") {
+    return `"${value.replaceAll('"', '""')}"`;
+  }
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }

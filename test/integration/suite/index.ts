@@ -29,7 +29,7 @@ export async function run(): Promise<void> {
   );
   const extensionApi = exportsValue as {
     getExtensionReviewPorts(): ExtensionPorts | undefined;
-    getMcpRuntime(): {
+    getBridgeRuntime(): {
       readonly status: { readonly state: string };
       restart(): Promise<void>;
     } | undefined;
@@ -39,14 +39,14 @@ export async function run(): Promise<void> {
   const folders = vscode.workspace.workspaceFolders ?? [];
   if (folders.length === 0) {
     assert.equal(extensionApi.getExtensionReviewPorts(), undefined);
-    assert.equal(extensionApi.getMcpRuntime()?.status.state, "disabled");
+    assert.equal(extensionApi.getBridgeRuntime()?.status.state, "disabled");
   } else {
     const ports = extensionApi.getExtensionReviewPorts();
     assert.ok(
       ports,
       `An eligible jj workspace initializes review ports: ${extensionApi.getActivationStatus()}`,
     );
-    assert.equal(extensionApi.getMcpRuntime()?.status.state, "running");
+    assert.equal(extensionApi.getBridgeRuntime()?.status.state, "registered");
     const active = await ports.service.getActiveReviewOrUndefined();
     const record =
       active ??

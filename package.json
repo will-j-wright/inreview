@@ -51,11 +51,10 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "InReview does not run jj or start its MCP server until you trust the workspace.",
+      "description": "InReview does not run jj or register with its native MCP bridge until you trust the workspace.",
       "restrictedConfigurations": [
         "inreview.jj.path",
-        "inreview.mcp.enabled",
-        "inreview.mcp.port"
+        "inreview.mcp.enabled"
       ]
     },
     "virtualWorkspaces": {
@@ -207,13 +206,13 @@
       },
       {
         "command": "inreview.copyCopilotCliMcpSetup",
-        "title": "Copy Copilot CLI MCP Setup",
+        "title": "Copy InReview MCP Setup",
         "category": "InReview",
         "enablement": "isWorkspaceTrusted"
       },
       {
         "command": "inreview.showMcpServerStatus",
-        "title": "Show MCP Server Status",
+        "title": "Show MCP Bridge Status",
         "category": "InReview",
         "enablement": "isWorkspaceTrusted"
       }
@@ -361,18 +360,7 @@
           "type": "boolean",
           "default": true,
           "scope": "resource",
-          "markdownDescription": "Start the local MCP server automatically for an eligible trusted workspace."
-        },
-        "inreview.mcp.port": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "default": null,
-          "minimum": 1,
-          "maximum": 65535,
-          "scope": "resource",
-          "markdownDescription": "An optional fixed loopback port override. Leave this unset to use the deterministic repository port in the 41000-48999 range."
+          "markdownDescription": "Register this trusted workspace with the per-user native InReview MCP bridge."
         },
         "inreview.logging.level": {
           "type": "string",
@@ -391,19 +379,23 @@
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
+    "check:bridge": "cargo fmt --manifest-path bridge/Cargo.toml --check && cargo clippy --manifest-path bridge/Cargo.toml --locked -- -D warnings",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src test",
     "test": "npm run test:unit",
-    "test:unit": "vitest run",
-    "build": "node esbuild.mjs",
-    "build:production": "node esbuild.mjs --production",
+    "test:bridge": "cargo test --manifest-path bridge/Cargo.toml --locked",
+    "test:unit": "npm run build:bridge && vitest run",
+    "build:bridge": "node scripts/build-bridge.mjs",
+    "build:bridge:production": "node scripts/build-bridge.mjs --release",
+    "build": "npm run build:bridge && node esbuild.mjs",
+    "build:production": "npm run build:bridge:production && node esbuild.mjs --production",
     "build:test": "node esbuild.mjs --tests",
     "test:integration": "npm run build:production && npm run build:test && tsx test/integration/runTest.ts",
     "watch": "node esbuild.mjs --watch",
     "validate:package": "node scripts/validate-package.mjs",
-    "check": "npm run typecheck && npm run lint && npm run test:unit && npm run build:production && npm run validate:package",
+    "check": "npm run check:bridge && npm run typecheck && npm run lint && npm run test:bridge && npm run test:unit && npm run build:production && npm run validate:package",
     "vscode:prepublish": "npm run build:production",
-    "package:vsix": "npm run check && vsce package --no-dependencies --skip-license"
+    "package:vsix": "npm run check && node scripts/package-vsix.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -411,6 +403,7 @@
     "@types/vscode": "^1.96.0",
     "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.9.2",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "esbuild": "^0.28.2",
     "eslint": "^10.9.1",
     "tsx": "^4.23.12",
@@ -419,7 +412,6 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^4.4.3"
   }
 }

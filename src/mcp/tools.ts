@@ -1,6 +1,5 @@
 import path from "node:path";
 
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { z } from "zod";
 
@@ -21,25 +20,15 @@ import {
 } from "../review/commentService";
 import { ReviewLifecycleError } from "../review/errors";
 import {
-  closeCommentsInputSchema,
   closeCommentsOutputSchema,
-  closeCommentsRegistrationOutputSchema,
-  connectWorkspaceInputSchema,
   connectWorkspaceOutputSchema,
-  connectWorkspaceRegistrationOutputSchema,
   type CloseCommentsInput,
   type ConnectWorkspaceInput,
   type McpToolError,
-  readCommentsInputSchema,
   readCommentsOutputSchema,
-  readCommentsRegistrationOutputSchema,
   type ReadCommentsInput,
-  readReviewMetadataInputSchema,
   readReviewMetadataOutputSchema,
-  readReviewMetadataRegistrationOutputSchema,
-  replyCommentInputSchema,
   replyCommentOutputSchema,
-  replyCommentRegistrationOutputSchema,
   type ReplyCommentInput,
 } from "./schemas";
 import type {
@@ -56,71 +45,6 @@ export interface McpReviewToolHandlers {
   readonly replyComment: ToolHandler<ReplyCommentInput>;
   readonly closeComments: ToolHandler<CloseCommentsInput>;
 }
-
-export function registerMcpReviewTools(
-  server: McpServer,
-  dependencies: McpReviewToolDependencies,
-): void {
-  const handlers = createMcpReviewToolHandlers(dependencies);
-
-  server.registerTool(
-    "connect_workspace",
-    {
-      description:
-        "Connect this MCP session to the exact absolute jj workspace root served by InReview. Call this first and again whenever another tool reports STALE_CONNECTION. A workspace without an active review returns a no_active_review state.",
-      inputSchema: connectWorkspaceInputSchema,
-      outputSchema: connectWorkspaceRegistrationOutputSchema,
-      annotations: { readOnlyHint: true },
-    },
-    handlers.connectWorkspace,
-  );
-  server.registerTool(
-    "read_review_metadata",
-    {
-      description:
-        "Read the connected active review's identity, ordered changes, current snapshot, views, safe file manifest, and comment counts. Call connect_workspace first. This tool never returns file or blob contents.",
-      inputSchema: readReviewMetadataInputSchema,
-      outputSchema: readReviewMetadataRegistrationOutputSchema,
-      annotations: { readOnlyHint: true },
-    },
-    handlers.readReviewMetadata,
-  );
-  server.registerTool(
-    "read_comments",
-    {
-      description:
-        "Read comments from the connected active review. By default this returns all open current and outdated threads. Use strict status, outdated, repository-relative file, comment_ids, cursor, and limit filters for bounded stable pagination.",
-      inputSchema: readCommentsInputSchema,
-      outputSchema: readCommentsRegistrationOutputSchema,
-      annotations: { readOnlyHint: true },
-    },
-    handlers.readComments,
-  );
-  server.registerTool(
-    "reply_comment",
-    {
-      description:
-        'Reply to one open thread in the connected active review as the fixed author "Agent". The thread stays open. Use read_comments to obtain its comment_id.',
-      inputSchema: replyCommentInputSchema,
-      outputSchema: replyCommentRegistrationOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false },
-    },
-    handlers.replyComment,
-  );
-  server.registerTool(
-    "close_comments",
-    {
-      description:
-        'Atomically resolve a nonempty batch of open threads in the connected active review as "Agent". Optional resolution notes become Agent messages. If any item is invalid, duplicated, outside this review, or already resolved, no item changes.',
-      inputSchema: closeCommentsInputSchema,
-      outputSchema: closeCommentsRegistrationOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: true },
-    },
-    handlers.closeComments,
-  );
-}
-
-export const registerReviewTools = registerMcpReviewTools;
 
 export function createMcpReviewToolHandlers(
   dependencies: McpReviewToolDependencies,

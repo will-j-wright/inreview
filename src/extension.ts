@@ -1,12 +1,16 @@
 import * as vscode from "vscode";
 
+import {
+  BridgeRuntime,
+  installBridge,
+  type InstalledBridge,
+} from "./bridge";
 import { commandDefinitions } from "./commands";
 import { readSettings, type InReviewSettings } from "./config/settings";
 import { selectExtensionApi } from "./extensionApi";
 import { discoverWorkspaceRepository, JjClient } from "./jj";
 import {
   CopilotSetupController,
-  McpRuntime,
 } from "./mcp";
 import { ReviewService } from "./review";
 import { BlobStore } from "./storage";
@@ -42,7 +46,7 @@ let activeService: ReviewService | undefined;
 let activeLogger: InReviewLogger | undefined;
 let activeNativeDiffService: NativeDiffService | undefined;
 let activeCommentController: InReviewCommentController | undefined;
-let activeMcpRuntime: McpRuntime | undefined;
+let activeBridgeRuntime: BridgeRuntime | undefined;
 
 export interface ExtensionReviewPorts {
   readonly service: ReviewService;
@@ -53,7 +57,7 @@ export interface ExtensionReviewPorts {
 
 export interface InReviewExtensionApi {
   getExtensionReviewPorts(): ExtensionReviewPorts | undefined;
-  getMcpRuntime(): McpRuntime | undefined;
+  getBridgeRuntime(): BridgeRuntime | undefined;
   getCommentController(): vscode.CommentController | undefined;
   getActivationStatus(): string;
   registerLaterCommandDelegates(
@@ -68,8 +72,8 @@ function getExtensionReviewPorts(): ExtensionReviewPorts | undefined {
   return activePorts;
 }
 
-function getMcpRuntime(): McpRuntime | undefined {
-  return activeMcpRuntime;
+function getBridgeRuntime(): BridgeRuntime | undefined {
+  return activeBridgeRuntime;
 }
 
 function registerLaterCommandDelegates(
@@ -128,22 +132,33 @@ export async function activate(
       };
     }
 
-    const mcpRuntime = new McpRuntime({
-      eligible:
-        vscode.workspace.isTrusted &&
-        initialization.service !== undefined &&
-        isSupportedMcpEnvironment(),
+    const bridgeEligible =
+      vscode.workspace.isTrusted &&
+      initialization.service !== undefined;
+    let installedBridge: InstalledBridge | undefined;
+    let bridgeInstallError: string | undefined;
+    if (bridgeEligible) {
+      try {
+        installedBridge = await installBridge(context);
+      } catch (error) {
+        void error;
+        logger.error("Could not install the InReview bridge");
+        bridgeInstallError =
+          "The native InReview bridge could not be installed.";
+      }
+    }
+    const bridgeRuntime = new BridgeRuntime({
+      eligible: bridgeEligible && installedBridge !== undefined,
       enabled: settings.mcpEnabled,
       ...(initialization.service === undefined
         ? {}
         : { service: initialization.service }),
-      ...(settings.mcpPort === undefined
-        ? {}
-        : { configuredPort: settings.mcpPort }),
+      executablePath: installedBridge?.executablePath ?? "",
+      endpoint: installedBridge?.endpoint ?? "",
       logger,
     });
-    activeMcpRuntime = mcpRuntime;
-    await mcpRuntime.start();
+    activeBridgeRuntime = bridgeRuntime;
+    await bridgeRuntime.start();
     const configurationSubscription =
       vscode.workspace.onDidChangeConfiguration((event) => {
         const resource = vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -151,32 +166,27 @@ export async function activate(
           return;
         }
         const updated = readSettings(resource);
-        void mcpRuntime
+        void bridgeRuntime
           .configure({
             eligible:
               vscode.workspace.isTrusted &&
               initialization.service !== undefined &&
-              isSupportedMcpEnvironment(),
+              installedBridge !== undefined,
             enabled: updated.mcpEnabled,
-            ...(updated.mcpPort === undefined
-              ? {}
-              : { configuredPort: updated.mcpPort }),
           });
       });
     localDisposables.push(configurationSubscription, {
       dispose: () => {
-        void mcpRuntime.dispose();
+        void bridgeRuntime.dispose();
       },
     });
     const copilotSetup = new CopilotSetupController({
-      runtime: mcpRuntime,
+      runtime: bridgeRuntime,
       ui: {
         showQuickPick: async (items, options) =>
           vscode.window.showQuickPick(items, options),
         showInformationMessage: async (message, ...actions) =>
           vscode.window.showInformationMessage(message, ...actions),
-        showWarningMessage: async (message, options, ...actions) =>
-          vscode.window.showWarningMessage(message, options, ...actions),
         showErrorMessage: async (message, ...actions) =>
           vscode.window.showErrorMessage(message, ...actions),
         writeClipboard: async (text) => vscode.env.clipboard.writeText(text),
@@ -184,21 +194,12 @@ export async function activate(
           logger.show();
         },
       },
-      eligible:
-        vscode.workspace.isTrusted &&
-        initialization.service !== undefined &&
-        isSupportedMcpEnvironment(),
-      unavailableReason: isSupportedMcpEnvironment()
-        ? initialization.reason
-        : "Copilot CLI MCP setup is supported only in local desktop windows and WSL.",
-      ...(initialization.service === undefined
+      eligible: bridgeEligible && installedBridge !== undefined,
+      unavailableReason:
+        bridgeInstallError ?? initialization.reason,
+      ...(installedBridge === undefined
         ? {}
-        : {
-            canonicalRepositoryRoot:
-              initialization.service.canonicalRepositoryRoot,
-            repositoryFingerprint: initialization.service.storageKey,
-          }),
-      isWsl: vscode.env.remoteName?.toLowerCase() === "wsl",
+        : { launcherPath: installedBridge.launcherPath }),
     });
     localDisposables.push(
       registerLaterCommandDelegates({
@@ -325,7 +326,7 @@ export async function activate(
       context.extensionMode === vscode.ExtensionMode.Production,
       {
       getExtensionReviewPorts: () => getExtensionReviewPorts(),
-      getMcpRuntime: () => getMcpRuntime(),
+      getBridgeRuntime: () => getBridgeRuntime(),
       getCommentController: () => activeCommentController?.controller,
       getActivationStatus: () => activationStatus,
       registerLaterCommandDelegates: (delegates) =>
@@ -338,8 +339,8 @@ export async function activate(
     activePorts = undefined;
     activeNativeDiffService = undefined;
     activeCommentController = undefined;
-    await activeMcpRuntime?.dispose().catch(() => undefined);
-    activeMcpRuntime = undefined;
+    await activeBridgeRuntime?.dispose().catch(() => undefined);
+    activeBridgeRuntime = undefined;
     activationStatus = "InReview is deactivated.";
     for (const disposable of localDisposables.reverse()) {
       disposable.dispose();
@@ -352,8 +353,8 @@ export async function activate(
 }
 
 export async function deactivate(): Promise<void> {
-  const mcpRuntime = activeMcpRuntime;
-  activeMcpRuntime = undefined;
+  const bridgeRuntime = activeBridgeRuntime;
+  activeBridgeRuntime = undefined;
   const service = activeService;
   activeService = undefined;
   activePorts = undefined;
@@ -361,7 +362,7 @@ export async function deactivate(): Promise<void> {
   activeNativeDiffService = undefined;
   activeCommentController?.dispose();
   activeCommentController = undefined;
-  await mcpRuntime?.dispose().catch(() => undefined);
+  await bridgeRuntime?.dispose().catch(() => undefined);
   await service?.close().catch((error: unknown) => {
     activeLogger?.error("Could not close the review service", error);
   });
@@ -438,11 +439,6 @@ function unavailable(message: string): Initialization {
     state: { kind: "unavailable", message },
     reason: message,
   };
-}
-
-function isSupportedMcpEnvironment(): boolean {
-  const remoteName = vscode.env.remoteName?.toLowerCase();
-  return remoteName === undefined || remoteName === "wsl";
 }
 
 function registerCommands(

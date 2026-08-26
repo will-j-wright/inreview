@@ -5,7 +5,6 @@ export interface InReviewSettings {
   readonly defaultChangeCount: number;
   readonly largeDiffWarningLines: number;
   readonly mcpEnabled: boolean;
-  readonly mcpPort: number | undefined;
   readonly logLevel: "error" | "warn" | "info" | "debug";
 }
 
@@ -22,7 +21,6 @@ export function readSettings(resource?: vscode.Uri): InReviewSettings {
       10_000,
     ),
     mcpEnabled: configuration.get<boolean>("mcp.enabled") !== false,
-    mcpPort: optionalPort(configuration.get<number | null>("mcp.port")),
     logLevel: parseLogLevel(configuration.get<string>("logging.level")),
   };
 }
@@ -44,15 +42,6 @@ function nonNegativeInteger(value: number | undefined, fallback: number): number
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
     ? value
     : fallback;
-}
-
-function optionalPort(value: number | null | undefined): number | undefined {
-  return typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value >= 1 &&
-    value <= 65_535
-    ? value
-    : undefined;
 }
 
 function parseLogLevel(

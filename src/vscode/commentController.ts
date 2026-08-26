@@ -427,6 +427,7 @@ export class InReviewCommentController implements vscode.Disposable {
       readonly document: vscode.TextDocument;
       readonly placement: CommentPlacement;
       readonly record: ReviewRecord;
+      readonly readOnly: boolean;
     }[] = [];
     const records = new Map<string, ReviewRecord | undefined>();
     const seen = new Set<string>();
@@ -451,7 +452,12 @@ export class InReviewCommentController implements vscode.Disposable {
         const key = `${document.uri.toString()}\0${placement.thread.commentId}`;
         if (!seen.has(key)) {
           seen.add(key);
-          desired.push({ document, placement, record });
+          desired.push({
+            document,
+            placement,
+            record,
+            readOnly: identity.readOnly,
+          });
         }
       }
     }
@@ -460,7 +466,7 @@ export class InReviewCommentController implements vscode.Disposable {
       return;
     }
     const desiredKeys = new Set<string>();
-    for (const { document, placement, record } of desired) {
+    for (const { document, placement, record, readOnly } of desired) {
       if (this.#disposed) {
         return;
       }
@@ -469,13 +475,24 @@ export class InReviewCommentController implements vscode.Disposable {
       }
       const key = threadKey(document.uri, placement.thread.commentId);
       desiredKeys.add(key);
-      const presentation = this.makePresentation(document, placement, record);
+      const presentation = this.makePresentation(
+        document,
+        placement,
+        record,
+        readOnly,
+      );
       const existing = this.#threads.get(key);
       if (existing !== undefined) {
-        this.updateEntry(existing, presentation, placement.thread, record);
+        this.updateEntry(
+          existing,
+          presentation,
+          placement.thread,
+          record,
+          readOnly,
+        );
         continue;
       }
-      const comments = this.renderMessages(placement.thread, record);
+      const comments = this.renderMessages(placement.thread, record, readOnly);
       const rendered = this.#controller.createCommentThread(
         document.uri,
         presentation.range,
@@ -524,9 +541,10 @@ export class InReviewCommentController implements vscode.Disposable {
   private renderMessages(
     thread: PersistedCommentThread,
     record: ReviewRecord,
+    readOnly: boolean,
   ): readonly vscode.Comment[] {
     return thread.messages.map((message) =>
-      this.renderMessage(thread, message, record),
+      this.renderMessage(thread, message, record, readOnly),
     );
   }
 
@@ -534,8 +552,12 @@ export class InReviewCommentController implements vscode.Disposable {
     thread: PersistedCommentThread,
     message: CommentMessage,
     record: ReviewRecord,
+    readOnly: boolean,
   ): vscode.Comment {
-    const editable = record.review.state === "active" && message.author === "user";
+    const editable =
+      !readOnly &&
+      record.review.state === "active" &&
+      message.author === "user";
     const rendered: vscode.Comment = {
       body: message.body,
       mode: this.#vscode.CommentMode.Preview,
@@ -556,22 +578,28 @@ export class InReviewCommentController implements vscode.Disposable {
     document: vscode.TextDocument,
     placement: CommentPlacement,
     record: ReviewRecord,
+    readOnly: boolean,
   ): ThreadPresentation {
     const line = placement.line - 1;
     const endCharacter = document.lineAt(line).range.end.character;
     const rangeSignature = JSON.stringify([line, 0, line, endCharacter]);
     const commentSignature = JSON.stringify(
       placement.thread.messages.map((message) =>
-        messagePresentation(message, record.review.state === "active"),
+        messagePresentation(
+          message,
+          !readOnly && record.review.state === "active",
+        ),
       ),
     );
     const canReply =
-      record.review.state === "active" && placement.thread.state === "open";
+      !readOnly &&
+      record.review.state === "active" &&
+      placement.thread.state === "open";
     const state =
       placement.thread.state === "resolved"
         ? this.#vscode.CommentThreadState.Resolved
         : this.#vscode.CommentThreadState.Unresolved;
-    const contextValue = threadContext(placement, record);
+    const contextValue = threadContext(placement, record, readOnly);
     const label = threadLabel(placement);
     return {
       rangeSignature,
@@ -597,6 +625,7 @@ export class InReviewCommentController implements vscode.Disposable {
     presentation: ThreadPresentation,
     persisted: PersistedCommentThread,
     record: ReviewRecord,
+    readOnly: boolean,
   ): void {
     this.#threadMetadata.set(entry.thread, { value: persisted });
     if (entry.presentation.commentSignature === presentation.commentSignature) {
@@ -612,7 +641,7 @@ export class InReviewCommentController implements vscode.Disposable {
       }
     }
     if (entry.presentation.commentSignature !== presentation.commentSignature) {
-      entry.comments = this.renderMessages(persisted, record);
+      entry.comments = this.renderMessages(persisted, record, readOnly);
       entry.thread.comments = entry.comments;
       if (this.isDisposed()) {
         return;
@@ -784,6 +813,7 @@ export function resolveCommentDocument(
 ): CommentDocumentTarget | undefined {
   if (
     identity.side !== "modified" ||
+    identity.readOnly ||
     record.review.state !== "active" ||
     identity.snapshotId !== record.review.currentSnapshotId
   ) {
@@ -824,7 +854,10 @@ export function commentPlacements(
   record: ReviewRecord,
   identity: VirtualDocumentIdentity,
 ): readonly CommentPlacement[] {
-  if (identity.side !== "modified") {
+  if (
+    identity.side !== "modified" ||
+    (record.review.state === "archived" && !identity.readOnly)
+  ) {
     return [];
   }
   return record.threads.flatMap((thread) => {
@@ -913,8 +946,10 @@ function matchesThreadFile(
 function threadContext(
   placement: CommentPlacement,
   record: ReviewRecord,
+  readOnly: boolean,
 ): string {
-  const mutability = record.review.state === "active" ? "writable" : "readOnly";
+  const mutability =
+    !readOnly && record.review.state === "active" ? "writable" : "readOnly";
   return [
     "inreview.thread",
     placement.thread.state,
@@ -980,13 +1015,14 @@ function revealTarget(
   if (file === undefined || repositoryPath === null || repositoryPath === undefined) {
     return undefined;
   }
+  const readOnly = record.review.state === "archived" || !current;
   return {
     request: {
       reviewId: record.review.id,
       snapshotId,
       view: viewIdentity,
       fileId: file.fileId,
-      readOnly: record.review.state === "archived" || !current,
+      readOnly,
     },
     modifiedIdentity: {
       reviewId: record.review.id,
@@ -995,6 +1031,7 @@ function revealTarget(
       fileId: file.fileId,
       side: "modified",
       repositoryPath,
+      readOnly,
     },
     ...(target.kind === "line" ? { line: target.line } : {}),
   };
@@ -1021,7 +1058,7 @@ function requestFromIdentity(
     snapshotId: identity.snapshotId,
     view: identity.view,
     fileId: identity.fileId,
-    readOnly: identity.side === "original",
+    readOnly: identity.readOnly || identity.side === "original",
   };
 }
 

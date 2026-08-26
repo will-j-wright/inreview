@@ -10,6 +10,7 @@
 **/.verification/**
 AGENTS.md
 src/**
+bridge/**
 test/**
 scripts/**
 node_modules/**

@@ -280,8 +280,8 @@ export class ReviewCommandController {
       saveComment: "Comment editing is not available yet.",
       cancelCommentEdit: "Comment editing is not available yet.",
       deleteComment: "Comment deletion is not available yet.",
-      copyCopilotCliMcpSetup: "The MCP server is not available yet.",
-      showMcpServerStatus: "The MCP server is not available yet.",
+      copyCopilotCliMcpSetup: "The MCP bridge is not available yet.",
+      showMcpServerStatus: "The MCP bridge is not available yet.",
     };
     await this.delegate(name, messages[name], ...args);
   }

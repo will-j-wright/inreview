@@ -300,8 +300,19 @@ describe("VS Code comment adapter", () => {
     outdatedAdapter.dispose();
   });
 
-  it("keeps archived threads read-only and returns no commenting ranges", async () => {
+  it("removes archived comments from active diffs but shows explicit History diffs read-only", async () => {
     const active = recordWithRanges();
+    const harness = makeHarness(active);
+    const adapter = new InReviewCommentController({
+      service: harness.service,
+      nativeDiff: harness.nativeDiff,
+      signingKey: key,
+      vscode: harness.api,
+    });
+    await adapter.refresh();
+    const activeRendered = harness.rendered.find(({ disposed }) => !disposed);
+    expect(activeRendered).toBeDefined();
+
     const record: ReviewRecord = {
       ...active,
       review: {
@@ -310,20 +321,31 @@ describe("VS Code comment adapter", () => {
         archivedAt: active.review.updatedAt,
       },
     };
-    const harness = makeHarness(record);
-    const adapter = new InReviewCommentController({
-      service: harness.service,
-      nativeDiff: harness.nativeDiff,
-      signingKey: key,
-      vscode: harness.api,
+    harness.record = record;
+    harness.lifecycleListener?.();
+    await adapter.refresh();
+    expect(activeRendered?.disposed).toBe(true);
+    expect(harness.rendered.filter(({ disposed }) => !disposed)).toHaveLength(0);
+
+    const historyDocument = harness.addDocument({
+      ...identityFor(record),
+      readOnly: true,
     });
     await adapter.refresh();
-    const rendered = harness.rendered.find(({ disposed }) => !disposed);
-    expect(rendered?.canReply).toBe(false);
+    const historicalRendered = harness.rendered.find(({ disposed }) => !disposed);
+    expect(historicalRendered?.uri.toString()).toBe(
+      historyDocument.uri.toString(),
+    );
+    expect(historicalRendered?.canReply).toBe(false);
+    expect(historicalRendered?.contextValue).toContain(".readOnly");
+    expect(historicalRendered?.comments[0]?.contextValue).toBe(
+      "inreview.comment.user.readOnly",
+    );
+
     const provider = adapter.controller.commentingRangeProvider;
     expect(provider).toBeDefined();
     await expect(
-      provider?.provideCommentingRanges(harness.document, {
+      provider?.provideCommentingRanges(historyDocument, {
         isCancellationRequested: false,
         onCancellationRequested: vi.fn(),
       }),
@@ -782,6 +804,7 @@ function identityFor(record: ReviewRecord): VirtualDocumentIdentity {
     fileId: "file-a",
     side: "modified",
     repositoryPath: "file.txt",
+    readOnly: false,
   };
 }
 
@@ -1023,7 +1046,9 @@ function makeHarness(record: ReviewRecord, getReviewGate?: Promise<void>) {
     controllerDisposed,
     subscriptionDisposals,
     getReview,
-    lifecycleListener,
+    get lifecycleListener() {
+      return lifecycleListener;
+    },
     addDocument(identity: VirtualDocumentIdentity) {
       const added = makeDocument(identity);
       documents.push(added);
