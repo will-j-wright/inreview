@@ -1,0 +1,416 @@
+{
+  "name": "inreview",
+  "displayName": "InReview",
+  "description": "Review local Jujutsu change stacks in Visual Studio Code.",
+  "version": "0.0.1",
+  "private": true,
+  "publisher": "inreview-local",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onView:inreview.activeReview",
+    "onView:inreview.comments",
+    "onView:inreview.history",
+    "onCommand:inreview.startReview",
+    "onCommand:inreview.refreshReview",
+    "onCommand:inreview.archiveReview",
+    "onCommand:inreview.restoreArchivedReview",
+    "onCommand:inreview.renameReview",
+    "onCommand:inreview.deleteArchivedReview",
+    "onCommand:inreview.showCombinedDiff",
+    "onCommand:inreview.showPerChangeDiffs",
+    "onCommand:inreview.addFileComment",
+    "onCommand:inreview.resolveComment",
+    "onCommand:inreview.reopenComment",
+    "onCommand:inreview.submitComment",
+    "onCommand:inreview.editComment",
+    "onCommand:inreview.saveComment",
+    "onCommand:inreview.cancelCommentEdit",
+    "onCommand:inreview.deleteComment",
+    "onCommand:inreview.copyCopilotCliMcpSetup",
+    "onCommand:inreview.showMcpServerStatus"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "InReview does not run jj or start its MCP server until you trust the workspace.",
+      "restrictedConfigurations": [
+        "inreview.jj.path",
+        "inreview.mcp.enabled",
+        "inreview.mcp.port"
+      ]
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "InReview requires a local file-system workspace and a jj executable in the extension host."
+    }
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "inreview",
+          "title": "InReview",
+          "icon": "media/inreview.svg"
+        }
+      ]
+    },
+    "views": {
+      "inreview": [
+        {
+          "id": "inreview.activeReview",
+          "name": "Active Review",
+          "contextualTitle": "InReview: Active Review"
+        },
+        {
+          "id": "inreview.comments",
+          "name": "Comments",
+          "contextualTitle": "InReview: Comments"
+        },
+        {
+          "id": "inreview.history",
+          "name": "History",
+          "contextualTitle": "InReview: History"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "inreview.startReview",
+        "title": "Start Review",
+        "category": "InReview",
+        "icon": "$(add)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.refreshReview",
+        "title": "Refresh Review",
+        "category": "InReview",
+        "icon": "$(refresh)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.archiveReview",
+        "title": "Archive Review",
+        "category": "InReview",
+        "icon": "$(archive)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.restoreArchivedReview",
+        "title": "Restore Archived Review",
+        "category": "InReview",
+        "icon": "$(discard)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.renameReview",
+        "title": "Rename Review",
+        "category": "InReview",
+        "icon": "$(edit)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.deleteArchivedReview",
+        "title": "Delete Archived Review",
+        "category": "InReview",
+        "icon": "$(trash)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.showCombinedDiff",
+        "title": "Show Combined Diff",
+        "category": "InReview",
+        "icon": "$(diff)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.showPerChangeDiffs",
+        "title": "Show Per-Change Diffs",
+        "category": "InReview",
+        "icon": "$(list-tree)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.addFileComment",
+        "title": "Add File Comment",
+        "category": "InReview",
+        "icon": "$(comment)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.resolveComment",
+        "title": "Resolve Comment",
+        "category": "InReview",
+        "icon": "$(check)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.reopenComment",
+        "title": "Reopen Comment",
+        "category": "InReview",
+        "icon": "$(history)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.submitComment",
+        "title": "Submit Comment",
+        "category": "InReview",
+        "icon": "$(send)",
+        "enablement": "isWorkspaceTrusted && !commentIsEmpty"
+      },
+      {
+        "command": "inreview.editComment",
+        "title": "Edit Comment",
+        "category": "InReview",
+        "icon": "$(edit)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.saveComment",
+        "title": "Save Comment",
+        "category": "InReview",
+        "icon": "$(save)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.cancelCommentEdit",
+        "title": "Cancel Comment Edit",
+        "category": "InReview",
+        "icon": "$(close)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.deleteComment",
+        "title": "Delete Comment",
+        "category": "InReview",
+        "icon": "$(trash)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.copyCopilotCliMcpSetup",
+        "title": "Copy Copilot CLI MCP Setup",
+        "category": "InReview",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.showMcpServerStatus",
+        "title": "Show MCP Server Status",
+        "category": "InReview",
+        "enablement": "isWorkspaceTrusted"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "inreview.startReview",
+          "when": "view == inreview.activeReview && isWorkspaceTrusted",
+          "group": "navigation@1"
+        },
+        {
+          "command": "inreview.refreshReview",
+          "when": "view == inreview.activeReview && isWorkspaceTrusted",
+          "group": "navigation@2"
+        },
+        {
+          "command": "inreview.archiveReview",
+          "when": "view == inreview.activeReview && isWorkspaceTrusted",
+          "group": "navigation@3"
+        },
+        {
+          "command": "inreview.showCombinedDiff",
+          "when": "view == inreview.activeReview && isWorkspaceTrusted",
+          "group": "navigation@4"
+        },
+        {
+          "command": "inreview.showPerChangeDiffs",
+          "when": "view == inreview.activeReview && isWorkspaceTrusted",
+          "group": "navigation@5"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "inreview.renameReview",
+          "when": "view == inreview.activeReview && viewItem == inreview.review.active",
+          "group": "inline@1"
+        },
+        {
+          "command": "inreview.archiveReview",
+          "when": "view == inreview.activeReview && viewItem == inreview.review.active",
+          "group": "inline@2"
+        },
+        {
+          "command": "inreview.addFileComment",
+          "when": "view == inreview.activeReview && viewItem =~ /^inreview\\.file\\./ && isWorkspaceTrusted",
+          "group": "inline@1"
+        },
+        {
+          "command": "inreview.resolveComment",
+          "when": "view == inreview.comments && viewItem =~ /^inreview\\.comment\\.open\\./",
+          "group": "inline@1"
+        },
+        {
+          "command": "inreview.reopenComment",
+          "when": "view == inreview.comments && viewItem == inreview.comment.resolved",
+          "group": "inline@1"
+        },
+        {
+          "command": "inreview.restoreArchivedReview",
+          "when": "view == inreview.history && viewItem == inreview.review.archived && isWorkspaceTrusted",
+          "group": "inline@1"
+        },
+        {
+          "command": "inreview.deleteArchivedReview",
+          "when": "view == inreview.history && viewItem == inreview.review.archived && isWorkspaceTrusted",
+          "group": "inline@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "inreview.addFileComment",
+          "when": "isWorkspaceTrusted && (resourceScheme == inreview-modified || resourceScheme == inreview-original)",
+          "group": "inreview@1"
+        }
+      ],
+      "comments/commentThread/title": [
+        {
+          "command": "inreview.resolveComment",
+          "when": "commentController == inreview && commentThread =~ /^inreview\\.thread\\.open\\..*\\.writable$/",
+          "group": "navigation@2"
+        },
+        {
+          "command": "inreview.reopenComment",
+          "when": "commentController == inreview && commentThread =~ /^inreview\\.thread\\.resolved\\..*\\.writable$/",
+          "group": "navigation@2"
+        }
+      ],
+      "comments/commentThread/context": [
+        {
+          "command": "inreview.submitComment",
+          "when": "commentController == inreview && isWorkspaceTrusted && (commentThreadIsEmpty || commentThread =~ /^inreview\\.thread\\.open\\..*\\.writable$/)",
+          "group": "inline@1"
+        }
+      ],
+      "comments/comment/title": [
+        {
+          "command": "inreview.editComment",
+          "when": "commentController == inreview && comment == inreview.comment.user",
+          "group": "inline@1"
+        },
+        {
+          "command": "inreview.deleteComment",
+          "when": "commentController == inreview && comment == inreview.comment.user",
+          "group": "inline@2"
+        }
+      ],
+      "comments/comment/context": [
+        {
+          "command": "inreview.saveComment",
+          "when": "commentController == inreview && comment == inreview.comment.user.editing",
+          "group": "inline@1"
+        },
+        {
+          "command": "inreview.cancelCommentEdit",
+          "when": "commentController == inreview && comment == inreview.comment.user.editing",
+          "group": "inline@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "InReview",
+      "properties": {
+        "inreview.jj.path": {
+          "type": "string",
+          "default": "jj",
+          "scope": "resource",
+          "markdownDescription": "The absolute path or command name for the `jj` executable."
+        },
+        "inreview.review.defaultChangeCount": {
+          "type": "integer",
+          "default": 1,
+          "minimum": 1,
+          "scope": "resource",
+          "markdownDescription": "The initial number of changes in the **Start Review** prompt."
+        },
+        "inreview.review.largeDiffWarningLines": {
+          "type": "integer",
+          "default": 10000,
+          "minimum": 0,
+          "scope": "resource",
+          "markdownDescription": "Warn before creating a review with more than this many changed lines. Set to `0` to warn for every nonempty diff."
+        },
+        "inreview.mcp.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "markdownDescription": "Start the local MCP server automatically for an eligible trusted workspace."
+        },
+        "inreview.mcp.port": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "default": null,
+          "minimum": 1,
+          "maximum": 65535,
+          "scope": "resource",
+          "markdownDescription": "An optional loopback port override. Leave this unset to use the repository's assigned port."
+        },
+        "inreview.logging.level": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug"
+          ],
+          "default": "info",
+          "scope": "window",
+          "markdownDescription": "The minimum level written to the local **InReview** output channel."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "test": "npm run test:unit",
+    "test:unit": "vitest run",
+    "build": "node esbuild.mjs",
+    "build:production": "node esbuild.mjs --production",
+    "build:test": "node esbuild.mjs --tests",
+    "test:integration": "npm run build:production && npm run build:test && tsx test/integration/runTest.ts",
+    "watch": "node esbuild.mjs --watch",
+    "validate:package": "node scripts/validate-package.mjs",
+    "check": "npm run typecheck && npm run lint && npm run test:unit && npm run build:production && npm run validate:package",
+    "vscode:prepublish": "npm run build:production",
+    "package:vsix": "npm run check && vsce package --no-dependencies --allow-missing-repository --skip-license"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.3.0",
+    "@types/vscode": "^1.96.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.9.1",
+    "tsx": "^4.23.12",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.68.0",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.4.3"
+  }
+}
