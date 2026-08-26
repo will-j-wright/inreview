@@ -24,6 +24,10 @@ assert.equal(new Set(commands).size, commands.length);
 assert.ok(commands.every((command) => command.startsWith("inreview.")));
 
 const activationEvents = new Set(manifest.activationEvents);
+assert.ok(
+  activationEvents.has("onStartupFinished"),
+  "InReview must activate after startup so its MCP server is available before a view or command is opened.",
+);
 for (const command of commands) {
   assert.ok(
     activationEvents.has(`onCommand:${command}`),

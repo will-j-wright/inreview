@@ -6,7 +6,7 @@ export async function run(): Promise<void> {
   const extension = vscode.extensions.getExtension("inreview-local.inreview");
 
   assert.ok(extension, "The InReview extension is installed in the test host.");
-  await extension.activate();
+  await waitForActivation(extension);
   assert.equal(extension.isActive, true);
 
   const commands = await vscode.commands.getCommands(true);
@@ -89,6 +89,20 @@ export async function run(): Promise<void> {
       cancellation.dispose();
     }
   }
+}
+
+async function waitForActivation(
+  extension: vscode.Extension<unknown>,
+): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (!extension.isActive && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(
+    extension.isActive,
+    true,
+    "InReview activates on startup without opening its view or running a command.",
+  );
 }
 
 interface ExtensionPorts {

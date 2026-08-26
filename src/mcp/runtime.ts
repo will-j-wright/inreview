@@ -19,7 +19,6 @@ export type McpRuntimeStatus =
       readonly endpoint: string;
       readonly port: number;
       readonly sessionCount: number;
-      readonly setupUpdateRequired: boolean;
     }
   | { readonly state: "error"; readonly message: string };
 
@@ -29,14 +28,8 @@ export interface McpRuntimePolicy {
   readonly configuredPort?: number;
 }
 
-export interface McpPreferredPortStore {
-  get(key: string): unknown;
-  update(key: string, value: number): Thenable<void>;
-}
-
 export interface McpRuntimeLogger {
   info(message: string): void;
-  warn(message: string): void;
   error(message: string, error?: unknown): void;
 }
 
@@ -46,18 +39,33 @@ type TransportFactory = (
 
 export interface McpRuntimeOptions extends McpRuntimePolicy {
   readonly service?: ReviewService;
-  readonly preferredPortKey?: string;
-  readonly preferredPortStore?: McpPreferredPortStore;
   readonly logger?: McpRuntimeLogger;
   readonly transportFactory?: TransportFactory;
 }
 
 const START_ERROR = "The MCP server could not start.";
+const MCP_PORT_RANGE_START = 41_000;
+const MCP_PORT_RANGE_SIZE = 8_000;
+const UINT32_RANGE_SIZE = 0x1_0000_0000n;
+
+/**
+ * Maps the first 32 fingerprint bits uniformly onto ports 41000-48999.
+ * This fixed range stays below the Windows dynamic port range, which starts at 49152.
+ */
+export function deterministicMcpPort(repositoryFingerprint: string): number {
+  if (!/^[0-9a-f]{64}$/iu.test(repositoryFingerprint)) {
+    throw new Error(
+      "The repository fingerprint must be a 64-character SHA-256 hexadecimal value.",
+    );
+  }
+  const prefix = BigInt(`0x${repositoryFingerprint.slice(0, 8)}`);
+  const offset =
+    (prefix * BigInt(MCP_PORT_RANGE_SIZE)) / UINT32_RANGE_SIZE;
+  return MCP_PORT_RANGE_START + Number(offset);
+}
 
 export class McpRuntime {
   readonly #service: ReviewService | undefined;
-  readonly #preferredPortKey: string | undefined;
-  readonly #preferredPortStore: McpPreferredPortStore | undefined;
   readonly #logger: McpRuntimeLogger | undefined;
   readonly #transportFactory: TransportFactory;
   #policy: McpRuntimePolicy;
@@ -65,12 +73,9 @@ export class McpRuntime {
   #server: McpTransportServer<McpToolSessionContext> | undefined;
   #operation = Promise.resolve();
   #disposed = false;
-  #setupUpdateRequired = false;
 
   public constructor(options: McpRuntimeOptions) {
     this.#service = options.service;
-    this.#preferredPortKey = options.preferredPortKey;
-    this.#preferredPortStore = options.preferredPortStore;
     this.#logger = options.logger;
     this.#transportFactory =
       options.transportFactory ?? createMcpTransportServer;
@@ -83,7 +88,6 @@ export class McpRuntime {
       return {
         ...this.#status,
         sessionCount: this.#server?.sessionCount ?? 0,
-        setupUpdateRequired: this.#setupUpdateRequired,
       };
     }
     return this.#status;
@@ -141,10 +145,6 @@ export class McpRuntime {
     });
   }
 
-  public markSetupCopied(): void {
-    this.#setupUpdateRequired = false;
-  }
-
   public dispose(): Promise<void> {
     return this.#enqueue(async () => {
       this.#disposed = true;
@@ -177,71 +177,28 @@ export class McpRuntime {
       return;
     }
     this.#status = { state: "starting" };
-    const configuredPort = this.#policy.configuredPort;
-    const storedPreferredPort = this.#readPreferredPort();
-    const preferredPort =
-      configuredPort === undefined ? storedPreferredPort : undefined;
-    const requestedPort = configuredPort ?? preferredPort ?? 0;
-    let endpointChanged = false;
+    const requestedPort =
+      this.#policy.configuredPort ?? deterministicMcpPort(service.storageKey);
     try {
       this.#server = await this.#createTransport(requestedPort);
     } catch (error) {
-      if (
-        configuredPort === undefined &&
-        requestedPort !== 0 &&
-        isAddressInUse(error)
-      ) {
-        this.#logger?.warn(
-          "The preferred MCP port is unavailable. InReview will assign a new loopback port.",
-        );
-        endpointChanged = true;
-        try {
-          this.#server = await this.#createTransport(0);
-        } catch (fallbackError) {
-          this.#failStart(fallbackError);
-          return;
-        }
-      } else {
-        this.#failStart(error);
-        return;
-      }
+      this.#failStart(error, requestedPort);
+      return;
     }
     const address = this.#server.address;
     if (address === undefined) {
       await this.#stopServer();
       this.#failStart(
         new Error("The MCP transport did not report an address."),
+        requestedPort,
       );
       return;
     }
-    endpointChanged ||=
-      storedPreferredPort !== undefined &&
-      storedPreferredPort !== address.port;
-    if (configuredPort === undefined) {
-      try {
-        await this.#persistPreferredPort(address.port);
-      } catch {
-        await this.#stopServer();
-        this.#status = {
-          state: "error",
-          message:
-            "The MCP server could not save its assigned port. Check VS Code extension storage and retry.",
-        };
-        this.#logger?.error("Could not persist the preferred MCP port");
-        return;
-      }
-    } else {
-      await this.#persistPreferredPort(configuredPort).catch(() => {
-        this.#logger?.warn("Could not remember the configured MCP port.");
-      });
-    }
-    this.#setupUpdateRequired ||= endpointChanged;
     this.#status = {
       state: "running",
       endpoint: address.endpoint.href,
       port: address.port,
       sessionCount: 0,
-      setupUpdateRequired: this.#setupUpdateRequired,
     };
     this.#logger?.info(`The MCP server is running on loopback port ${String(address.port)}.`);
   }
@@ -271,30 +228,10 @@ export class McpRuntime {
     }
   }
 
-  #readPreferredPort(): number | undefined {
-    if (
-      this.#preferredPortKey === undefined ||
-      this.#preferredPortStore === undefined
-    ) {
-      return undefined;
-    }
-    const value = this.#preferredPortStore.get(this.#preferredPortKey);
-    return isPort(value) ? value : undefined;
-  }
-
-  async #persistPreferredPort(port: number): Promise<void> {
-    if (
-      this.#preferredPortKey !== undefined &&
-      this.#preferredPortStore !== undefined
-    ) {
-      await this.#preferredPortStore.update(this.#preferredPortKey, port);
-    }
-  }
-
-  #failStart(error: unknown): void {
+  #failStart(error: unknown, requestedPort: number): void {
     this.#status = {
       state: "error",
-      message: startErrorMessage(error, this.#policy.configuredPort),
+      message: startErrorMessage(error, requestedPort),
     };
     this.#logger?.error("Could not start the MCP server");
   }
@@ -319,21 +256,12 @@ function isAddressInUse(error: unknown): boolean {
   );
 }
 
-function isPort(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isSafeInteger(value) &&
-    value >= 1 &&
-    value <= 65_535
-  );
-}
-
 function startErrorMessage(
   error: unknown,
-  configuredPort: number | undefined,
+  requestedPort: number,
 ): string {
-  if (configuredPort !== undefined && isAddressInUse(error)) {
-    return `The configured MCP port ${String(configuredPort)} is already in use. Change InReview: MCP Port or stop the process that uses it.`;
+  if (isAddressInUse(error)) {
+    return `The MCP port ${String(requestedPort)} is already in use. Set inreview.mcp.port to an available fixed port, then rerun Copy Copilot CLI MCP Setup.`;
   }
   if (!(error instanceof Error) || error.message.trim().length === 0) {
     return START_ERROR;

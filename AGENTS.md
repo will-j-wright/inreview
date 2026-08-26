@@ -46,6 +46,8 @@ Keep domain, storage, jj, and review services independent of `vscode`. Put VS Co
 ## MCP constraints
 
 - Bind only to `127.0.0.1`.
+- Derive the default static port from the repository and environment fingerprint in the `41000`-`48999` range. An explicit `inreview.mcp.port` overrides it.
+- Treat every port collision as an error. Never select a random replacement. The static endpoint keeps Copilot setup valid across restarts, so v1 needs no bridge process.
 - Keep strict Host and present-Origin validation to prevent DNS rebinding.
 - Keep session isolation, limits, expiry, DELETE teardown, and clean shutdown.
 - The server is intentionally tokenless. Do not add bearer tokens, API keys, secret setup, or token rotation without an explicit product decision.

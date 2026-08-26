@@ -142,24 +142,10 @@ export async function activate(
       ...(settings.mcpPort === undefined
         ? {}
         : { configuredPort: settings.mcpPort }),
-      ...(initialization.service === undefined
-        ? {}
-        : {
-            preferredPortKey: `inreview.mcp.preferredPort.${initialization.service.storageKey}`,
-            preferredPortStore: context.globalState,
-          }),
       logger,
     });
     activeMcpRuntime = mcpRuntime;
     await mcpRuntime.start();
-    if (
-      mcpRuntime.status.state === "running" &&
-      mcpRuntime.status.setupUpdateRequired
-    ) {
-      await vscode.window.showWarningMessage(
-        "The InReview MCP endpoint changed. Run “InReview: Copy Copilot CLI MCP Setup” again.",
-      );
-    }
     const configurationSubscription =
       vscode.workspace.onDidChangeConfiguration((event) => {
         const resource = vscode.workspace.workspaceFolders?.[0]?.uri;
@@ -177,16 +163,6 @@ export async function activate(
             ...(updated.mcpPort === undefined
               ? {}
               : { configuredPort: updated.mcpPort }),
-          })
-          .then(async () => {
-            if (
-              mcpRuntime.status.state === "running" &&
-              mcpRuntime.status.setupUpdateRequired
-            ) {
-              await vscode.window.showWarningMessage(
-                "The InReview MCP endpoint changed. Run “InReview: Copy Copilot CLI MCP Setup” again.",
-              );
-            }
           });
       });
     localDisposables.push(configurationSubscription, {

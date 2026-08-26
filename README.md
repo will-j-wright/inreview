@@ -58,6 +58,14 @@ Deleted lines are visible but are not commentable. Deleted files can receive fil
 ## Connect GitHub Copilot CLI
 
 The MCP server starts automatically for an eligible trusted workspace.
+By default, InReview derives a static port in the `41000`-`48999` range from
+the repository and environment fingerprint. Thus, copied MCP configuration
+stays valid across VS Code restarts. Set `inreview.mcp.port` to use a different
+fixed port. If that port is in use, the server stays in an error state. Set an
+available fixed port, then run **InReview: Copy Copilot CLI MCP Setup** again.
+
+This deterministic endpoint is sufficient for v1, so InReview does not need a
+persistent port assignment or a separate bridge process.
 
 1. Run **InReview: Copy Copilot CLI MCP Setup**.
 2. Select either the `copilot mcp add` command or the `mcp-config.json` fragment.
@@ -100,7 +108,7 @@ Review data is stored in VS Code extension storage. It is not written into the r
 | `inreview.review.defaultChangeCount` | `1` | Initial value for the Last `X` prompt. |
 | `inreview.review.largeDiffWarningLines` | `10000` | Changed-line count that requires confirmation. |
 | `inreview.mcp.enabled` | `true` | Start the local MCP server for an eligible workspace. |
-| `inreview.mcp.port` | unset | Optional fixed loopback port. |
+| `inreview.mcp.port` | unset | Optional fixed loopback port override. The default is a deterministic repository port from `41000` to `48999`. |
 | `inreview.logging.level` | `info` | Output-channel logging threshold. |
 
 ## Current limitations
@@ -137,4 +145,3 @@ src/review/   Review lifecycle and comment services
 src/vscode/   Views, native virtual diffs, and Comments API integration
 src/mcp/      Streamable HTTP transport, tools, and Copilot setup
 ```
-

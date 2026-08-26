@@ -18,7 +18,6 @@ const OPEN_OUTPUT_ACTION = "Open InReview Output";
 export interface CopilotSetupRuntime {
   readonly status: McpRuntimeStatus;
   restart(): Promise<void>;
-  markSetupCopied(): void;
 }
 
 export interface CopilotSetupUi {
@@ -93,7 +92,6 @@ export class CopilotSetupController {
       );
       return;
     }
-    this.options.runtime.markSetupCopied();
     await this.options.ui.showInformationMessage(
       this.options.isWsl
         ? "Copied. Use this setup with Copilot CLI in this same WSL distribution while this VS Code window and MCP server are running."
@@ -113,9 +111,7 @@ export class CopilotSetupController {
       `Server name: ${identity?.serverName ?? "unavailable"}`,
       `Repository identity: ${identity?.shortFingerprint ?? "unavailable"}`,
     ];
-    if (status.state === "running" && status.setupUpdateRequired) {
-      lines.push("Action required: Copy the Copilot CLI MCP setup again.");
-    } else if (status.state === "error") {
+    if (status.state === "error") {
       lines.push(`Error: ${status.message}`);
     } else if (status.state === "stopped") {
       lines.push("Action required: Start the MCP server.");

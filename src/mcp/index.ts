@@ -3,7 +3,7 @@ export {
   type McpRuntimeOptions,
   type McpRuntimePolicy,
   type McpRuntimeStatus,
-  type McpPreferredPortStore,
+  deterministicMcpPort,
 } from "./runtime";
 export {
   COPILOT_ALLOWED_TOOLS,

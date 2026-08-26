@@ -17,6 +17,7 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
+    "onStartupFinished",
     "onView:inreview.activeReview",
     "onView:inreview.comments",
     "onView:inreview.history",
@@ -363,7 +364,7 @@
           "minimum": 1,
           "maximum": 65535,
           "scope": "resource",
-          "markdownDescription": "An optional loopback port override. Leave this unset to use the repository's assigned port."
+          "markdownDescription": "An optional fixed loopback port override. Leave this unset to use the deterministic repository port in the 41000-48999 range."
         },
         "inreview.logging.level": {
           "type": "string",

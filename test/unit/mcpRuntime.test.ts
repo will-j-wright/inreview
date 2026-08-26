@@ -10,8 +10,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ReviewRecord } from "../../src/domain/comments";
 import {
+  deterministicMcpPort,
   McpRuntime,
-  type McpPreferredPortStore,
   type McpRuntimeStatus,
 } from "../../src/mcp";
 import type { ReviewReadSession, ReviewRepository } from "../../src/review/types";
@@ -26,6 +26,43 @@ const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
   await Promise.allSettled(cleanups.splice(0).map(async (cleanup) => cleanup()));
   vi.restoreAllMocks();
+});
+
+describe("deterministic MCP port", () => {
+  it("accepts lowercase and uppercase SHA-256 fingerprints", () => {
+    const fingerprint = "89abcdef".padEnd(64, "0");
+
+    expect(deterministicMcpPort(fingerprint.toUpperCase())).toBe(
+      deterministicMcpPort(fingerprint),
+    );
+  });
+
+  it.each([
+    "",
+    "0".repeat(63),
+    "0".repeat(65),
+    `${"0".repeat(63)}g`,
+    `${"0".repeat(63)}-`,
+  ])("rejects the invalid fingerprint %j", (fingerprint) => {
+    expect(() => deterministicMcpPort(fingerprint)).toThrow(
+      "64-character SHA-256 hexadecimal",
+    );
+  });
+
+  it("covers the documented fixed range boundaries", () => {
+    expect(deterministicMcpPort("0".repeat(64))).toBe(41_000);
+    expect(deterministicMcpPort("f".repeat(64))).toBe(48_999);
+  });
+
+  it("is stable and separates distinct 32-bit fingerprint prefixes", () => {
+    const first = "12345678".padEnd(64, "0");
+    const second = "87654321".padEnd(64, "0");
+
+    expect(deterministicMcpPort(first)).toBe(deterministicMcpPort(first));
+    expect(deterministicMcpPort(first)).not.toBe(
+      deterministicMcpPort(second),
+    );
+  });
 });
 
 describe("MCP runtime", () => {
@@ -73,39 +110,33 @@ describe("MCP runtime", () => {
 
     expect(runtime.status).toEqual({
       state: "error",
-      message: `The configured MCP port ${String(address.port)} is already in use. Change InReview: MCP Port or stop the process that uses it.`,
+      message: `The MCP port ${String(address.port)} is already in use. Set inreview.mcp.port to an available fixed port, then rerun Copy Copilot CLI MCP Setup.`,
     });
     await runtime.dispose();
   });
 
-  it("persists and reuses an automatically assigned repository port", async () => {
+  it("uses the same repository port across runtimes without memento state", async () => {
     const harness = await createHarness();
-    const state = new MemoryPortState();
-    const key = `preferred.${harness.service.storageKey}`;
-    const first = runtimeWithPortState(harness, state, key);
+    const expectedPort = deterministicMcpPort(harness.service.storageKey);
+    const first = runtimeFor(harness.service);
     await first.start();
     const firstPort = runningPort(first.status);
-    expect(state.values.get(key)).toBe(firstPort);
+    expect(firstPort).toBe(expectedPort);
     await first.dispose();
 
-    const second = runtimeWithPortState(harness, state, key);
+    const second = runtimeFor(harness.service);
     await second.start();
     expect(runningPort(second.status)).toBe(firstPort);
     await second.dispose();
   });
 
-  it("reassigns and persists a preferred port after a collision", async () => {
+  it("keeps a deterministic port collision in a clear error state", async () => {
     const harness = await createHarness();
-    const state = new MemoryPortState();
-    const key = `preferred.${harness.service.storageKey}`;
-    const first = runtimeWithPortState(harness, state, key);
-    await first.start();
-    const oldPort = runningPort(first.status);
-    await first.dispose();
+    const deterministicPort = deterministicMcpPort(harness.service.storageKey);
 
     const occupied = createServer();
     await new Promise<void>((resolve) => {
-      occupied.listen(oldPort, "127.0.0.1", resolve);
+      occupied.listen(deterministicPort, "127.0.0.1", resolve);
     });
     cleanups.push(
       async () =>
@@ -116,27 +147,18 @@ describe("MCP runtime", () => {
         }),
     );
 
-    const second = runtimeWithPortState(harness, state, key);
-    await second.start();
-    expect(runningPort(second.status)).not.toBe(oldPort);
-    expect(state.values.get(key)).toBe(runningPort(second.status));
-    expect(second.status).toMatchObject({
-      state: "running",
-      setupUpdateRequired: true,
+    const runtime = runtimeFor(harness.service);
+    await runtime.start();
+    expect(runtime.status).toEqual({
+      state: "error",
+      message: `The MCP port ${String(deterministicPort)} is already in use. Set inreview.mcp.port to an available fixed port, then rerun Copy Copilot CLI MCP Setup.`,
     });
-    second.markSetupCopied();
-    expect(second.status).toMatchObject({
-      state: "running",
-      setupUpdateRequired: false,
-    });
-    await second.dispose();
+    await runtime.dispose();
   });
 
-  it("requires setup recopy when an explicit setting changes the endpoint", async () => {
+  it("restarts on an explicit port override and returns to the deterministic port", async () => {
     const harness = await createHarness();
-    const state = new MemoryPortState();
-    const key = `preferred.${harness.service.storageKey}`;
-    const runtime = runtimeWithPortState(harness, state, key);
+    const runtime = runtimeFor(harness.service);
     await runtime.start();
     const oldPort = runningPort(runtime.status);
 
@@ -163,10 +185,14 @@ describe("MCP runtime", () => {
 
     expect(runningPort(runtime.status)).toBe(newPort);
     expect(newPort).not.toBe(oldPort);
-    expect(runtime.status).toMatchObject({
-      setupUpdateRequired: true,
+
+    await runtime.configure({
+      eligible: true,
+      enabled: true,
     });
-    expect(state.values.get(key)).toBe(newPort);
+
+    expect(runningPort(runtime.status)).toBe(oldPort);
+    expect(oldPort).not.toBe(0);
     await runtime.dispose();
   });
 
@@ -337,19 +363,6 @@ describe("MCP runtime", () => {
   });
 });
 
-class MemoryPortState implements McpPreferredPortStore {
-  public readonly values = new Map<string, number>();
-
-  public get(key: string): unknown {
-    return this.values.get(key);
-  }
-
-  public update(key: string, value: number): Promise<void> {
-    this.values.set(key, value);
-    return Promise.resolve();
-  }
-}
-
 interface Harness {
   readonly store: ReviewStore;
   readonly service: ReviewService;
@@ -404,22 +417,6 @@ function runtimeFor(
     eligible: true,
     enabled: true,
     ...(configuredPort === undefined ? {} : { configuredPort }),
-  });
-  cleanups.push(async () => runtime.dispose());
-  return runtime;
-}
-
-function runtimeWithPortState(
-  harness: Harness,
-  state: McpPreferredPortStore,
-  preferredPortKey: string,
-): McpRuntime {
-  const runtime = new McpRuntime({
-    service: harness.service,
-    eligible: true,
-    enabled: true,
-    preferredPortKey,
-    preferredPortStore: state,
   });
   cleanups.push(async () => runtime.dispose());
   return runtime;

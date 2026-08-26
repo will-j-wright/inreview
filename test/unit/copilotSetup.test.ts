@@ -12,7 +12,7 @@ import {
 } from "../../src/mcp";
 
 const endpoint = "http://127.0.0.1:43123/mcp";
-const fingerprint = "0123456789abcdef0123456789abcdef";
+const fingerprint = "0123456789abcdef".repeat(4);
 const serverName = "inreview-my-repo-01234567";
 const forbiddenSetupText = /authorization|header|token|secret/iu;
 
@@ -75,7 +75,6 @@ describe("Copilot CLI MCP setup commands", () => {
     expect(ui.clipboard).toHaveLength(1);
     expect(ui.clipboard[0]).not.toMatch(forbiddenSetupText);
     expect(ui.information.at(-1)).toContain("same WSL distribution");
-    expect(runtime.markSetupCopied).toHaveBeenCalledOnce();
   });
 
   it("does nothing when the format choice is cancelled", async () => {
@@ -83,6 +82,19 @@ describe("Copilot CLI MCP setup commands", () => {
     await createController(new FakeRuntime(runningStatus()), ui).copySetup();
     expect(ui.clipboard).toHaveLength(0);
     expect(ui.warnings).toHaveLength(0);
+  });
+
+  it("copies stable setup output for the same static endpoint", async () => {
+    const runtime = new FakeRuntime(runningStatus());
+    const ui = new FakeUi();
+    ui.quickPickResults.push("Copilot CLI command", "Copilot CLI command");
+    const controller = createController(runtime, ui);
+
+    await controller.copySetup();
+    await controller.copySetup();
+
+    expect(ui.clipboard).toHaveLength(2);
+    expect(ui.clipboard[0]).toBe(ui.clipboard[1]);
   });
 
   it("offers to restart a stopped server and reports a startup error", async () => {
@@ -135,8 +147,6 @@ class FakeRuntime implements CopilotSetupRuntime {
     }
     return Promise.resolve();
   });
-  public readonly markSetupCopied = vi.fn();
-
   public constructor(private currentStatus: McpRuntimeStatus) {}
 
   public get status(): McpRuntimeStatus {
@@ -189,7 +199,6 @@ function runningStatus(): McpRuntimeStatus {
     endpoint,
     port: 43123,
     sessionCount: 2,
-    setupUpdateRequired: false,
   };
 }
 
