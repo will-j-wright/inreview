@@ -128,7 +128,7 @@ describe("comment document mapping", () => {
 });
 
 describe("VS Code comment adapter", () => {
-  it("renders persisted authors and file labels, refreshes without duplicates, and disposes", async () => {
+  it("renders persisted authors and file labels, reuses no-op threads, and disposes", async () => {
     const record = recordWithAgentAndFileComment();
     const harness = makeHarness(record);
     const adapter = new InReviewCommentController({
@@ -146,18 +146,21 @@ describe("VS Code comment adapter", () => {
     expect(harness.rendered[1]?.label).toContain(
       "File-level comment (not tied to a source line)",
     );
+    const threads = [...harness.rendered];
+    const writes = threads.map(({ propertyWrites }) => propertyWrites);
 
     harness.commentListener?.();
     await adapter.refresh();
     expect(harness.rendered.filter(({ disposed }) => !disposed)).toHaveLength(2);
-    expect(harness.rendered.filter(({ disposed }) => disposed).length).toBeGreaterThan(
-      0,
-    );
+    expect(harness.rendered).toEqual(threads);
+    expect(threads.map(({ propertyWrites }) => propertyWrites)).toEqual(writes);
+    expect(threads.map(({ disposeCalls }) => disposeCalls)).toEqual([0, 0]);
 
     adapter.dispose();
     adapter.dispose();
     expect(harness.controllerDisposed).toHaveBeenCalledOnce();
     expect(harness.rendered.every(({ disposed }) => disposed)).toBe(true);
+    expect(threads.map(({ disposeCalls }) => disposeCalls)).toEqual([1, 1]);
   });
 
   it("persists create, reply, edit, delete, resolve, reopen, and file comments", async () => {
@@ -326,6 +329,357 @@ describe("VS Code comment adapter", () => {
       }),
     ).resolves.toEqual([]);
     adapter.dispose();
+  });
+
+  it("coalesces UI callbacks from creation, mutation, and disposal", async () => {
+    const record = recordWithRanges();
+    const harness = makeHarness(record);
+    const adapter = new InReviewCommentController({
+      service: harness.service,
+      nativeDiff: harness.nativeDiff,
+      signingKey: key,
+      vscode: harness.api,
+    });
+    await adapter.refresh();
+    const original = record.threads[0];
+    if (original === undefined) {
+      throw new Error("Missing fixture thread.");
+    }
+    const added = copyThread(original);
+    harness.record = {
+      ...record,
+      threads: [original, added],
+      review: {
+        ...record.review,
+        counts: { open: 2, outdated: 0, resolved: 0 },
+      },
+    };
+
+    harness.onCreate = () => {
+      void adapter.refresh();
+    };
+    let calls = harness.getReview.mock.calls.length;
+    await adapter.refresh();
+    expect(harness.getReview.mock.calls.length - calls).toBe(2);
+    expect(harness.rendered.filter(({ disposed }) => !disposed)).toHaveLength(2);
+
+    harness.onCreate = undefined;
+    harness.onMutation = () => {
+      void adapter.refresh();
+    };
+    const changed = {
+      ...original,
+      state: "resolved" as const,
+      resolvedAt: new Date(Date.parse(original.updatedAt) + 1_000).toISOString(),
+      updatedAt: new Date(Date.parse(original.updatedAt) + 1_000).toISOString(),
+    };
+    harness.record = {
+      ...harness.record,
+      threads: [changed, added],
+      review: {
+        ...harness.record.review,
+        counts: { open: 1, outdated: 0, resolved: 1 },
+      },
+    };
+    calls = harness.getReview.mock.calls.length;
+    await adapter.refresh();
+    expect(harness.getReview.mock.calls.length - calls).toBe(2);
+
+    harness.onMutation = undefined;
+    harness.onDispose = () => {
+      void adapter.refresh();
+    };
+    harness.record = {
+      ...harness.record,
+      threads: [changed],
+      review: {
+        ...harness.record.review,
+        counts: { open: 0, outdated: 0, resolved: 1 },
+      },
+    };
+    calls = harness.getReview.mock.calls.length;
+    await adapter.refresh();
+    expect(harness.getReview.mock.calls.length - calls).toBe(2);
+    expect(harness.rendered.filter(({ disposed }) => !disposed)).toHaveLength(1);
+    adapter.dispose();
+  });
+
+  it("coalesces a service event with an explicit refresh without duplicates", async () => {
+    const record = recordWithRanges();
+    const harness = makeHarness(record);
+    const adapter = new InReviewCommentController({
+      service: harness.service,
+      nativeDiff: harness.nativeDiff,
+      signingKey: key,
+      vscode: harness.api,
+    });
+    await adapter.refresh();
+
+    harness.commentListener?.();
+    await adapter.refresh();
+
+    expect(harness.rendered.filter(({ disposed }) => !disposed)).toHaveLength(1);
+    expect(harness.rendered).toHaveLength(1);
+    adapter.dispose();
+  });
+
+  it("awaits a command's event-driven refresh without adding another pass", async () => {
+    const record = recordWithRanges();
+    const harness = makeHarness(record);
+    const adapter = new InReviewCommentController({
+      service: harness.service,
+      nativeDiff: harness.nativeDiff,
+      signingKey: key,
+      vscode: harness.api,
+    });
+    await adapter.refresh();
+    const rendered = harness.rendered[0];
+    const message = record.threads[0]?.messages[0];
+    if (rendered === undefined || message === undefined) {
+      throw new Error("Missing fixture thread.");
+    }
+    harness.commentService.reply.mockImplementationOnce(() => {
+      harness.commentListener?.();
+      return Promise.resolve(message);
+    });
+    const calls = harness.getReview.mock.calls.length;
+
+    await adapter.submit({ thread: rendered, text: "Reply" });
+
+    expect(harness.getReview.mock.calls.length - calls).toBe(1);
+    expect(harness.rendered).toHaveLength(1);
+    expect(rendered.disposed).toBe(false);
+    adapter.dispose();
+  });
+
+  it("logs one rebuild error and accepts a later refresh", async () => {
+    const record = recordWithRanges();
+    const harness = makeHarness(record);
+    const logError = vi.fn();
+    const adapter = new InReviewCommentController({
+      service: harness.service,
+      nativeDiff: harness.nativeDiff,
+      signingKey: key,
+      vscode: harness.api,
+      logError,
+    });
+    await adapter.refresh();
+    const persisted = record.threads[0];
+    if (persisted === undefined) {
+      throw new Error("Missing fixture thread.");
+    }
+    harness.record = {
+      ...record,
+      review: {
+        ...record.review,
+        counts: { open: 0, outdated: 0, resolved: 1 },
+      },
+      threads: [
+        {
+          ...persisted,
+          state: "resolved",
+          resolvedAt: persisted.updatedAt,
+        },
+      ],
+    };
+    harness.onMutation = () => {
+      throw new Error("Simulated VS Code setter failure.");
+    };
+
+    await adapter.refresh();
+    expect(logError).toHaveBeenCalledOnce();
+
+    harness.onMutation = undefined;
+    await adapter.refresh();
+    expect(logError).toHaveBeenCalledOnce();
+    expect(harness.rendered[0]?.state).toBe(
+      harness.api.CommentThreadState.Resolved,
+    );
+    adapter.dispose();
+  });
+
+  it("reconciles added, changed, moved, and removed persisted threads", async () => {
+    const record = recordWithRanges();
+    const harness = makeHarness(record);
+    const adapter = new InReviewCommentController({
+      service: harness.service,
+      nativeDiff: harness.nativeDiff,
+      signingKey: key,
+      vscode: harness.api,
+    });
+    await adapter.refresh();
+    const original = record.threads[0];
+    const snapshot = record.snapshots[0];
+    const originalMessage = original?.messages[0];
+    if (
+      original === undefined ||
+      originalMessage === undefined ||
+      original.projection === null ||
+      snapshot === undefined
+    ) {
+      throw new Error("Missing fixture data.");
+    }
+    const originalProjection = original.projection;
+    const originalRendered = harness.rendered[0];
+    const added = copyThread(original);
+    harness.record = {
+      ...record,
+      threads: [original, added],
+      review: {
+        ...record.review,
+        counts: { open: 2, outdated: 0, resolved: 0 },
+      },
+    };
+    await adapter.refresh();
+    expect(harness.rendered.filter(({ disposed }) => !disposed)).toHaveLength(2);
+    expect(originalRendered?.disposed).toBe(false);
+
+    const changed = {
+      ...original,
+      messages: [
+        {
+          ...originalMessage,
+          body: "Changed body",
+          updatedAt: new Date(
+            Date.parse(originalMessage.updatedAt) + 1_000,
+          ).toISOString(),
+        },
+      ],
+      updatedAt: new Date(Date.parse(original.updatedAt) + 1_000).toISOString(),
+    };
+    harness.record = { ...harness.record, threads: [changed, added] };
+    const commentsBefore = originalRendered?.comments;
+    await adapter.refresh();
+    expect(originalRendered?.disposed).toBe(false);
+    expect(originalRendered?.comments).not.toBe(commentsBefore);
+    expect(originalRendered?.comments[0]?.body).toBe("Changed body");
+
+    const newSnapshotId = randomUUID();
+    const newSnapshot = { ...structuredClone(snapshot), id: newSnapshotId };
+    const moved = {
+      ...changed,
+      projection: {
+        ...originalProjection,
+        snapshotId: newSnapshotId,
+      },
+    };
+    harness.addDocument({
+      ...identityFor(record),
+      snapshotId: newSnapshotId,
+    });
+    harness.record = {
+      ...harness.record,
+      review: {
+        ...harness.record.review,
+        currentSnapshotId: newSnapshotId,
+        snapshotIds: [snapshot.id, newSnapshotId],
+      },
+      snapshots: [snapshot, newSnapshot],
+      threads: [moved],
+    };
+    await adapter.refresh();
+    const movedRendered = harness.rendered.find(
+      ({ disposed, uri }) =>
+        !disposed && uri.toString() !== harness.document.uri.toString(),
+    );
+    expect(movedRendered).toBeDefined();
+    expect(originalRendered?.disposed).toBe(true);
+    expect(movedRendered?.disposed).toBe(false);
+
+    harness.record = {
+      ...harness.record,
+      review: {
+        ...harness.record.review,
+        counts: { open: 0, outdated: 0, resolved: 0 },
+      },
+      threads: [],
+    };
+    await adapter.refresh();
+    expect(movedRendered?.disposed).toBe(true);
+    expect(harness.rendered.filter(({ disposed }) => !disposed)).toHaveLength(0);
+    adapter.dispose();
+  });
+
+  it("updates metadata on reused threads and comments", async () => {
+    const record = recordWithRanges();
+    const harness = makeHarness(record);
+    const adapter = new InReviewCommentController({
+      service: harness.service,
+      nativeDiff: harness.nativeDiff,
+      signingKey: key,
+      vscode: harness.api,
+    });
+    await adapter.refresh();
+    const persisted = record.threads[0];
+    const rendered = harness.rendered[0];
+    const comment = rendered?.comments[0];
+    if (persisted === undefined || rendered === undefined || comment === undefined) {
+      throw new Error("Missing rendered fixture data.");
+    }
+    const persistedMessage = persisted.messages[0];
+    if (persistedMessage === undefined) {
+      throw new Error("Missing persisted message.");
+    }
+    const nextUpdatedAt = new Date(
+      Date.parse(persisted.updatedAt) + 5_000,
+    ).toISOString();
+    harness.record = {
+      ...record,
+      threads: [{ ...persisted, updatedAt: nextUpdatedAt }],
+    };
+    await adapter.refresh();
+    expect(harness.rendered).toHaveLength(1);
+    expect(rendered.comments[0]).toBe(comment);
+
+    await adapter.submit({ thread: rendered, text: "Reply" });
+    await adapter.save(comment);
+    await adapter.delete(comment);
+    await adapter.resolve(rendered);
+    for (const call of [
+      harness.commentService.reply,
+      harness.commentService.editMessage,
+      harness.commentService.deleteMessage,
+      harness.commentService.resolve,
+    ]) {
+      expect(call).toHaveBeenCalledWith(
+        expect.objectContaining({
+          commentId: persisted.commentId,
+          expectedUpdatedAt: nextUpdatedAt,
+        }),
+      );
+    }
+    expect(harness.commentService.editMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: persistedMessage.id }),
+    );
+    expect(harness.commentService.deleteMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: persistedMessage.id }),
+    );
+    adapter.dispose();
+  });
+
+  it("stops queued work and disposes resources once", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const harness = makeHarness(recordWithRanges(), gate);
+    const adapter = new InReviewCommentController({
+      service: harness.service,
+      nativeDiff: harness.nativeDiff,
+      signingKey: key,
+      vscode: harness.api,
+    });
+    const queued = adapter.refresh();
+    adapter.dispose();
+    adapter.dispose();
+    release();
+    await queued;
+
+    expect(harness.rendered).toHaveLength(0);
+    expect(harness.controllerDisposed).toHaveBeenCalledOnce();
+    for (const dispose of harness.subscriptionDisposals) {
+      expect(dispose).toHaveBeenCalledOnce();
+    }
   });
 });
 
@@ -496,47 +850,95 @@ interface RenderedThread {
   contextValue?: string;
   label?: string;
   disposed: boolean;
+  propertyWrites: number;
+  disposeCalls: number;
   dispose(): void;
 }
 
 function makeRenderedThread(
   uri: vscode.Uri,
   comments: readonly vscode.Comment[],
-  range = new TestRange(0, 0, 0, 5),
+  range: TestRange | vscode.Range = new TestRange(0, 0, 0, 5),
+  onMutation?: () => void,
+  onDispose?: () => void,
 ): RenderedThread & vscode.CommentThread {
-  return {
+  const thread = {
     uri,
     range: range as unknown as vscode.Range,
     comments,
     collapsibleState: 0,
     canReply: true,
     disposed: false,
+    propertyWrites: 0,
+    disposeCalls: 0,
     dispose() {
+      this.disposeCalls += 1;
       this.disposed = true;
+      onDispose?.();
     },
+  };
+  for (const property of [
+    "range",
+    "comments",
+    "collapsibleState",
+    "canReply",
+    "state",
+    "contextValue",
+    "label",
+  ] as const) {
+    let current: unknown = Reflect.get(thread, property);
+    Object.defineProperty(thread, property, {
+      configurable: true,
+      enumerable: true,
+      get: () => current,
+      set: (value) => {
+        current = value;
+        thread.propertyWrites += 1;
+        onMutation?.();
+      },
+    });
+  }
+  return thread;
+}
+
+function copyThread(thread: PersistedCommentThread): PersistedCommentThread {
+  return {
+    ...structuredClone(thread),
+    commentId: randomUUID(),
+    messages: thread.messages.map((message) => ({
+      ...structuredClone(message),
+      id: randomUUID(),
+    })),
   };
 }
 
-function makeHarness(record: ReviewRecord) {
+function makeHarness(record: ReviewRecord, getReviewGate?: Promise<void>) {
   const codec = new VirtualDocumentUriCodec(key, {
     from: (components) => TestUri.from(components),
   });
-  const uri = codec.encode(identityFor(record));
-  const document = {
-    uri,
-    lineCount: 2,
-    lineAt: (line: number) => ({
-      range: new TestRange(line, 0, line, line === 0 ? 5 : 5),
-    }),
-  } as unknown as vscode.TextDocument;
+  const makeDocument = (identity: VirtualDocumentIdentity) =>
+    ({
+      uri: codec.encode(identity),
+      lineCount: 2,
+      lineAt: (line: number) => ({
+        range: new TestRange(line, 0, line, 5),
+      }),
+    }) as unknown as vscode.TextDocument;
+  const document = makeDocument(identityFor(record));
+  const documents = [document];
   const rendered: RenderedThread[] = [];
   const controllerDisposed = vi.fn();
+  const subscriptionDisposals = [vi.fn(), vi.fn(), vi.fn(), vi.fn()];
   let lifecycleListener: (() => void) | undefined;
   let commentListener: (() => void) | undefined;
+  let currentRecord = record;
+  let onCreate: (() => void) | undefined;
+  let onMutation: (() => void) | undefined;
+  let onDispose: (() => void) | undefined;
   const commentService = {
     subscribe: vi.fn((listener: () => void) => {
       commentListener = listener;
-      return { dispose: vi.fn() };
+      return { dispose: subscriptionDisposals[3] };
     }),
     createThread: vi.fn().mockResolvedValue(record.threads[0]),
     reply: vi.fn().mockResolvedValue(record.threads[0]?.messages[0]),
@@ -545,11 +947,15 @@ function makeHarness(record: ReviewRecord) {
     resolve: vi.fn().mockResolvedValue(record.threads[0]),
     reopen: vi.fn().mockResolvedValue(record.threads[0]),
   };
+  const getReview = vi.fn(async () => {
+    await getReviewGate;
+    return currentRecord;
+  });
   const service = {
-    getReview: vi.fn().mockResolvedValue(record),
+    getReview,
     subscribe: vi.fn((listener: () => void) => {
       lifecycleListener = listener;
-      return { dispose: vi.fn() };
+      return { dispose: subscriptionDisposals[2] };
     }),
     commentService,
   } as unknown as ReviewService;
@@ -569,23 +975,32 @@ function makeHarness(record: ReviewRecord) {
           range: vscode.Range,
           comments: readonly vscode.Comment[],
         ) => {
-          const thread = makeRenderedThread(targetUri, comments);
-          thread.range = range;
+          const thread = makeRenderedThread(
+            targetUri,
+            comments,
+            range,
+            () => onMutation?.(),
+            () => onDispose?.(),
+          );
           rendered.push(thread);
+          onCreate?.();
           return thread;
         },
         dispose: controllerDisposed,
       })),
     },
     workspace: {
-      textDocuments: [document],
-      onDidOpenTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
-      onDidCloseTextDocument: vi.fn(() => ({ dispose: vi.fn() })),
+      textDocuments: documents,
+      onDidOpenTextDocument: vi.fn(() => ({
+        dispose: subscriptionDisposals[0],
+      })),
+      onDidCloseTextDocument: vi.fn(() => ({
+        dispose: subscriptionDisposals[1],
+      })),
     },
     window: {
       visibleTextEditors: [editor],
       activeTextEditor: editor,
-      onDidChangeVisibleTextEditors: vi.fn(() => ({ dispose: vi.fn() })),
       showInputBox: vi.fn(() => Promise.resolve(input)),
     },
     Uri: TestUri,
@@ -606,7 +1021,38 @@ function makeHarness(record: ReviewRecord) {
     editor,
     rendered,
     controllerDisposed,
+    subscriptionDisposals,
+    getReview,
     lifecycleListener,
+    addDocument(identity: VirtualDocumentIdentity) {
+      const added = makeDocument(identity);
+      documents.push(added);
+      return added;
+    },
+    get record() {
+      return currentRecord;
+    },
+    set record(value: ReviewRecord) {
+      currentRecord = value;
+    },
+    get onCreate() {
+      return onCreate;
+    },
+    set onCreate(value: (() => void) | undefined) {
+      onCreate = value;
+    },
+    get onMutation() {
+      return onMutation;
+    },
+    set onMutation(value: (() => void) | undefined) {
+      onMutation = value;
+    },
+    get onDispose() {
+      return onDispose;
+    },
+    set onDispose(value: (() => void) | undefined) {
+      onDispose = value;
+    },
     get commentListener() {
       return commentListener;
     },

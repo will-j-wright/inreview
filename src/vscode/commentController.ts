@@ -58,7 +58,6 @@ export interface CommentVscodeApi {
     typeof vscode.window,
     | "visibleTextEditors"
     | "activeTextEditor"
-    | "onDidChangeVisibleTextEditors"
     | "showInputBox"
   >;
   readonly Uri: typeof vscode.Uri;
@@ -92,6 +91,23 @@ interface ThreadReference {
   readonly commentId: string;
 }
 
+interface ThreadPresentation {
+  readonly rangeSignature: string;
+  readonly commentSignature: string;
+  readonly signature: string;
+  readonly range: vscode.Range;
+  readonly canReply: boolean;
+  readonly state: vscode.CommentThreadState;
+  readonly contextValue: string;
+  readonly label: string;
+}
+
+interface RenderedEntry {
+  readonly thread: vscode.CommentThread;
+  comments: readonly vscode.Comment[];
+  presentation: ThreadPresentation;
+}
+
 export class InReviewCommentController implements vscode.Disposable {
   readonly #service: ReviewService;
   readonly #nativeDiff: Pick<NativeDiffService, "revealFile">;
@@ -103,9 +119,9 @@ export class InReviewCommentController implements vscode.Disposable {
   readonly #threadMetadata = new WeakMap<vscode.CommentThread, ThreadMetadata>();
   readonly #messageMetadata = new WeakMap<vscode.Comment, MessageMetadata>();
   readonly #editBodies = new WeakMap<vscode.Comment, string>();
-  #threads: vscode.CommentThread[] = [];
-  #refreshQueued = false;
-  #refreshPromise: Promise<void> = Promise.resolve();
+  readonly #threads = new Map<string, RenderedEntry>();
+  #refreshRequested = false;
+  #refreshWorker: Promise<void> | undefined;
   #disposed = false;
 
   public constructor(options: CommentControllerOptions) {
@@ -161,9 +177,6 @@ export class InReviewCommentController implements vscode.Disposable {
       options.vscode.workspace.onDidCloseTextDocument(() => {
         void this.refresh();
       }),
-      options.vscode.window.onDidChangeVisibleTextEditors(() => {
-        void this.refresh();
-      }),
       this.#service.subscribe(() => {
         void this.refresh();
       }),
@@ -193,7 +206,7 @@ export class InReviewCommentController implements vscode.Disposable {
         displayName: "You",
         expectedUpdatedAt: existing.value.updatedAt,
       });
-      await this.refresh();
+      await this.awaitEventDrivenRefresh();
       return;
     }
 
@@ -216,7 +229,7 @@ export class InReviewCommentController implements vscode.Disposable {
       expectedCurrentSnapshotId: record.review.currentSnapshotId,
     });
     reply.thread.dispose();
-    await this.refresh();
+    await this.awaitEventDrivenRefresh();
   }
 
   public edit(value: unknown): void {
@@ -250,7 +263,7 @@ export class InReviewCommentController implements vscode.Disposable {
       body: comment.body,
       expectedUpdatedAt: metadata.thread.updatedAt,
     });
-    await this.refresh();
+    await this.awaitEventDrivenRefresh();
   }
 
   public cancelEdit(value: unknown): void {
@@ -280,7 +293,7 @@ export class InReviewCommentController implements vscode.Disposable {
       messageId: metadata.message.id,
       expectedUpdatedAt: metadata.thread.updatedAt,
     });
-    await this.refresh();
+    await this.awaitEventDrivenRefresh();
   }
 
   public async addFileComment(...values: readonly unknown[]): Promise<void> {
@@ -323,7 +336,7 @@ export class InReviewCommentController implements vscode.Disposable {
       displayName: "You",
       expectedCurrentSnapshotId: record.review.currentSnapshotId,
     });
-    await this.refresh();
+    await this.awaitEventDrivenRefresh();
   }
 
   public async resolve(value: unknown): Promise<void> {
@@ -333,7 +346,7 @@ export class InReviewCommentController implements vscode.Disposable {
       commentId: thread.commentId,
       expectedUpdatedAt: thread.updatedAt,
     });
-    await this.refresh();
+    await this.awaitEventDrivenRefresh();
   }
 
   public async reopen(value: unknown): Promise<void> {
@@ -343,7 +356,7 @@ export class InReviewCommentController implements vscode.Disposable {
       commentId: thread.commentId,
       expectedUpdatedAt: thread.updatedAt,
     });
-    await this.refresh();
+    await this.awaitEventDrivenRefresh();
   }
 
   public async revealComment(value: unknown): Promise<void> {
@@ -389,28 +402,20 @@ export class InReviewCommentController implements vscode.Disposable {
     if (this.#disposed) {
       return Promise.resolve();
     }
-    this.#refreshQueued = true;
-    this.#refreshPromise = this.#refreshPromise
-      .catch((error: unknown) => {
-        this.#logError("Could not refresh inline comments", error);
-      })
-      .then(async () => {
-        while (this.#refreshQueued && !this.#disposed) {
-          this.#refreshQueued = false;
-          await this.rebuild();
-        }
-      })
-      .catch((error: unknown) => {
-        this.#logError("Could not refresh inline comments", error);
-      });
-    return this.#refreshPromise;
+    this.#refreshRequested = true;
+    if (this.#refreshWorker === undefined) {
+      const worker = this.runRefreshWorker();
+      this.#refreshWorker = worker;
+    }
+    return this.#refreshWorker;
   }
 
   public dispose(): void {
-    if (this.#disposed) {
+    if (this.isDisposed()) {
       return;
     }
     this.#disposed = true;
+    this.#refreshRequested = false;
     this.disposeThreads();
     for (const disposable of [...this.#disposables].reverse()) {
       disposable.dispose();
@@ -451,40 +456,78 @@ export class InReviewCommentController implements vscode.Disposable {
       }
     }
 
-    this.disposeThreads();
-    if (this.#disposed) {
+    if (this.isDisposed()) {
       return;
     }
-    const next: vscode.CommentThread[] = [];
+    const desiredKeys = new Set<string>();
     for (const { document, placement, record } of desired) {
+      if (this.#disposed) {
+        return;
+      }
       if (placement.line > document.lineCount) {
         continue;
       }
-      const line = placement.line - 1;
-      const endCharacter = document.lineAt(line).range.end.character;
-      const range = new this.#vscode.Range(line, 0, line, endCharacter);
-      const comments = placement.thread.messages.map((message) =>
-        this.renderMessage(placement.thread, message, record),
-      );
+      const key = threadKey(document.uri, placement.thread.commentId);
+      desiredKeys.add(key);
+      const presentation = this.makePresentation(document, placement, record);
+      const existing = this.#threads.get(key);
+      if (existing !== undefined) {
+        this.updateEntry(existing, presentation, placement.thread, record);
+        continue;
+      }
+      const comments = this.renderMessages(placement.thread, record);
       const rendered = this.#controller.createCommentThread(
         document.uri,
-        range,
+        presentation.range,
         comments,
       );
+      if (this.isDisposed()) {
+        rendered.dispose();
+        return;
+      }
+      const entry = { thread: rendered, comments, presentation };
+      this.#threads.set(key, entry);
+      this.#threadMetadata.set(rendered, { value: placement.thread });
       rendered.collapsibleState =
         this.#vscode.CommentThreadCollapsibleState.Expanded;
-      rendered.canReply =
-        record.review.state === "active" && placement.thread.state === "open";
-      rendered.state =
-        placement.thread.state === "resolved"
-          ? this.#vscode.CommentThreadState.Resolved
-          : this.#vscode.CommentThreadState.Unresolved;
-      rendered.contextValue = threadContext(placement, record);
-      rendered.label = threadLabel(placement);
-      this.#threadMetadata.set(rendered, { value: placement.thread });
-      next.push(rendered);
+      if (this.isDisposed()) {
+        return;
+      }
+      rendered.canReply = presentation.canReply;
+      if (this.isDisposed()) {
+        return;
+      }
+      rendered.state = presentation.state;
+      if (this.isDisposed()) {
+        return;
+      }
+      rendered.contextValue = presentation.contextValue;
+      if (this.isDisposed()) {
+        return;
+      }
+      rendered.label = presentation.label;
     }
-    this.#threads = next;
+    if (this.#disposed) {
+      return;
+    }
+    for (const [key, entry] of [...this.#threads]) {
+      if (!desiredKeys.has(key)) {
+        this.#threads.delete(key);
+        entry.thread.dispose();
+        if (this.isDisposed()) {
+          return;
+        }
+      }
+    }
+  }
+
+  private renderMessages(
+    thread: PersistedCommentThread,
+    record: ReviewRecord,
+  ): readonly vscode.Comment[] {
+    return thread.messages.map((message) =>
+      this.renderMessage(thread, message, record),
+    );
   }
 
   private renderMessage(
@@ -507,6 +550,141 @@ export class InReviewCommentController implements vscode.Disposable {
     };
     this.#messageMetadata.set(rendered, { thread, message });
     return rendered;
+  }
+
+  private makePresentation(
+    document: vscode.TextDocument,
+    placement: CommentPlacement,
+    record: ReviewRecord,
+  ): ThreadPresentation {
+    const line = placement.line - 1;
+    const endCharacter = document.lineAt(line).range.end.character;
+    const rangeSignature = JSON.stringify([line, 0, line, endCharacter]);
+    const commentSignature = JSON.stringify(
+      placement.thread.messages.map((message) =>
+        messagePresentation(message, record.review.state === "active"),
+      ),
+    );
+    const canReply =
+      record.review.state === "active" && placement.thread.state === "open";
+    const state =
+      placement.thread.state === "resolved"
+        ? this.#vscode.CommentThreadState.Resolved
+        : this.#vscode.CommentThreadState.Unresolved;
+    const contextValue = threadContext(placement, record);
+    const label = threadLabel(placement);
+    return {
+      rangeSignature,
+      commentSignature,
+      signature: JSON.stringify([
+        rangeSignature,
+        commentSignature,
+        state,
+        canReply,
+        contextValue,
+        label,
+      ]),
+      range: new this.#vscode.Range(line, 0, line, endCharacter),
+      canReply,
+      state,
+      contextValue,
+      label,
+    };
+  }
+
+  private updateEntry(
+    entry: RenderedEntry,
+    presentation: ThreadPresentation,
+    persisted: PersistedCommentThread,
+    record: ReviewRecord,
+  ): void {
+    this.#threadMetadata.set(entry.thread, { value: persisted });
+    if (entry.presentation.commentSignature === presentation.commentSignature) {
+      this.updateMessageMetadata(entry.comments, persisted);
+    }
+    if (entry.presentation.signature === presentation.signature) {
+      return;
+    }
+    if (entry.presentation.rangeSignature !== presentation.rangeSignature) {
+      entry.thread.range = presentation.range;
+      if (this.isDisposed()) {
+        return;
+      }
+    }
+    if (entry.presentation.commentSignature !== presentation.commentSignature) {
+      entry.comments = this.renderMessages(persisted, record);
+      entry.thread.comments = entry.comments;
+      if (this.isDisposed()) {
+        return;
+      }
+    }
+    if (entry.presentation.state !== presentation.state) {
+      entry.thread.state = presentation.state;
+      if (this.isDisposed()) {
+        return;
+      }
+    }
+    if (entry.presentation.canReply !== presentation.canReply) {
+      entry.thread.canReply = presentation.canReply;
+      if (this.isDisposed()) {
+        return;
+      }
+    }
+    if (entry.presentation.contextValue !== presentation.contextValue) {
+      entry.thread.contextValue = presentation.contextValue;
+      if (this.isDisposed()) {
+        return;
+      }
+    }
+    if (entry.presentation.label !== presentation.label) {
+      entry.thread.label = presentation.label;
+      if (this.isDisposed()) {
+        return;
+      }
+    }
+    entry.presentation = presentation;
+  }
+
+  private updateMessageMetadata(
+    rendered: readonly vscode.Comment[],
+    persisted: PersistedCommentThread,
+  ): void {
+    for (const [index, comment] of rendered.entries()) {
+      const message = persisted.messages[index];
+      if (message !== undefined) {
+        this.#messageMetadata.set(comment, { thread: persisted, message });
+      }
+    }
+  }
+
+  private async runRefreshWorker(): Promise<void> {
+    try {
+      let loggedError = false;
+      while (this.#refreshRequested && !this.#disposed) {
+        this.#refreshRequested = false;
+        try {
+          await this.rebuild();
+        } catch (error) {
+          if (!loggedError) {
+            loggedError = true;
+            this.#logError("Could not refresh inline comments", error);
+          }
+        }
+      }
+    } finally {
+      this.#refreshWorker = undefined;
+    }
+  }
+
+  private isDisposed(): boolean {
+    return this.#disposed;
+  }
+
+  private async awaitEventDrivenRefresh(): Promise<void> {
+    const worker = this.#refreshWorker;
+    if (worker !== undefined) {
+      await worker;
+    }
   }
 
   private decode(uri: vscode.Uri): VirtualDocumentIdentity | undefined {
@@ -570,11 +748,34 @@ export class InReviewCommentController implements vscode.Disposable {
   }
 
   private disposeThreads(): void {
-    for (const thread of this.#threads) {
-      thread.dispose();
+    const entries = [...this.#threads.values()];
+    this.#threads.clear();
+    for (const entry of entries) {
+      entry.thread.dispose();
     }
-    this.#threads = [];
   }
+}
+
+function threadKey(uri: vscode.Uri, commentId: string): string {
+  return `${uri.toString()}\0${commentId}`;
+}
+
+function messagePresentation(
+  message: CommentMessage,
+  reviewIsActive: boolean,
+): readonly unknown[] {
+  const editable = reviewIsActive && message.author === "user";
+  return [
+    message.body,
+    message.author === "agent" ? "Agent" : "You",
+    editable
+      ? "inreview.comment.user"
+      : message.author === "agent"
+        ? "inreview.comment.agent"
+        : "inreview.comment.user.readOnly",
+    message.updatedAt,
+    message.updatedAt === message.createdAt ? undefined : "Edited",
+  ];
 }
 
 export function resolveCommentDocument(
