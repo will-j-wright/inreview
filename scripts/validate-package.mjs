@@ -105,6 +105,7 @@ await Promise.all([
 
 const vscodeIgnore = await readFile(".vscodeignore", "utf8");
 for (const excluded of [
+  ".github/**",
   ".git/**",
   ".jj/**",
   ".test-work/**",

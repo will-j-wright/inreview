@@ -52,6 +52,10 @@ code --install-extension .\inreview-<target>-0.0.1.vsix --force
 Building a VSIX requires Rust 1.88 or newer. `<target>` is the current native
 platform, such as `linux-x64`, `darwin-arm64`, or `win32-x64`.
 
+Each commit to `main` runs the **Build VSIX packages** GitHub Actions workflow.
+The run uploads separate artifacts for the x64 and arm64 variants of Linux,
+macOS, and Windows.
+
 Reload VS Code after installation.
 
 ### Known issue: Node URL deprecation warning
