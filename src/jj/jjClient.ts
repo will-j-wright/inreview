@@ -2,6 +2,7 @@ import path from "node:path";
 import { realpath } from "node:fs/promises";
 
 import {
+  JjAmbiguousChangeError,
   JjCommandError,
   JjInvalidOutputError,
   JjInvalidRepositoryError,
@@ -21,7 +22,9 @@ import {
 } from "./processRunner";
 import {
   buildLastSelection,
+  buildRangeSelection,
   buildRefreshSelection,
+  buildRevsetSelection,
 } from "./reviewSelection";
 import type {
   JjCapabilities,
@@ -31,6 +34,7 @@ import type {
   JjFileProbe,
   JjOperation,
   JjVersion,
+  ReviewHistoryPage,
   ReviewSelection,
 } from "./types";
 
@@ -43,6 +47,7 @@ const VERSION_RANGE = "jj 0.44 or later";
 const CHANGE_ID_PATTERN = /^[k-z]{32}$/;
 const COMMIT_ID_PATTERN = /^[0-9a-f]{40,128}$/;
 const OPERATION_ID_PATTERN = /^[0-9a-f]{64,256}$/;
+const MAX_REVSET_LENGTH = 4096;
 
 export interface JjClientOptions {
   readonly executable?: string;
@@ -168,6 +173,10 @@ export class JjClient {
     }
     assertOperationId(operation.id);
     return new JjReadSession(this, capabilities, operation);
+  }
+
+  public async getCurrentOperationId(signal?: AbortSignal): Promise<string> {
+    return (await this.openReadSession(signal)).operationId;
   }
 
   public async resolveRepositoryRoot(signal?: AbortSignal): Promise<string> {
@@ -340,6 +349,123 @@ export class JjReadSession {
     return buildLastSelection(this.operationId, count, records);
   }
 
+  public async listHistory(
+    count: number,
+    signal?: AbortSignal,
+  ): Promise<ReviewHistoryPage> {
+    if (!Number.isSafeInteger(count) || count < 1) {
+      throw new JjSelectionError(
+        "The history count must be a positive integer.",
+      );
+    }
+    const records = await this.readCommitRevset(
+      `ancestors(@, ${String(count + 1)})`,
+      signal,
+    );
+    const currentRecords = records.filter(
+      (record) => record.currentWorkingCopy,
+    );
+    const current = currentRecords[0];
+    if (currentRecords.length !== 1 || current === undefined) {
+      throw new JjSelectionError(
+        "jj did not return one current working-copy change.",
+      );
+    }
+    const byCommitId = new Map(
+      records.map((record) => [record.commitId, record]),
+    );
+    const newestFirst: JjCommit[] = [];
+    let cursor: JjCommit = current;
+    let reachedRoot = false;
+    let hasMore = false;
+    for (;;) {
+      if (cursor.root) {
+        reachedRoot = true;
+        break;
+      }
+      if (
+        cursor.conflict ||
+        cursor.divergent ||
+        cursor.parentCommitIds.length !== 1
+      ) {
+        break;
+      }
+      newestFirst.push(cursor);
+      if (newestFirst.length > count) {
+        hasMore = true;
+        break;
+      }
+      const parent = byCommitId.get(cursor.parentCommitIds[0] ?? "");
+      if (parent === undefined) {
+        hasMore = !records.some((record) => record.root);
+        break;
+      }
+      cursor = parent;
+    }
+    return {
+      commits: newestFirst.slice(0, count).reverse(),
+      requestedCount: count,
+      hasMore,
+      reachedRoot,
+    };
+  }
+
+  public async selectRange(
+    oldestChangeId: string,
+    newestChangeId: string,
+    signal?: AbortSignal,
+  ): Promise<ReviewSelection> {
+    assertChangeId(oldestChangeId, "Oldest");
+    assertChangeId(newestChangeId, "Newest");
+    await this.requireUniqueChange(oldestChangeId, signal);
+    if (newestChangeId !== oldestChangeId) {
+      await this.requireUniqueChange(newestChangeId, signal);
+    }
+    const records = await this.readCommitRevset(
+      `change_id("${oldestChangeId}")::change_id("${newestChangeId}")`,
+      signal,
+    );
+    if (
+      records[0]?.changeId !== oldestChangeId ||
+      records.at(-1)?.changeId !== newestChangeId
+    ) {
+      throw new JjSelectionError(
+        "The selected endpoints do not form an inclusive change range.",
+      );
+    }
+    return buildRangeSelection(this.operationId, records);
+  }
+
+  public async selectRevset(
+    revset: string,
+    resultLimit: number,
+    signal?: AbortSignal,
+  ): Promise<ReviewSelection> {
+    const normalized = revset.trim();
+    if (
+      normalized.length === 0 ||
+      normalized.length > MAX_REVSET_LENGTH ||
+      normalized.includes("\0")
+    ) {
+      throw new JjSelectionError(
+        `Enter a jj revset between 1 and ${String(MAX_REVSET_LENGTH)} characters.`,
+      );
+    }
+    let records: readonly JjCommit[];
+    try {
+      records = await this.readCommitRevset(normalized, signal);
+    } catch (error) {
+      if (error instanceof JjCommandError) {
+        throw new JjSelectionError(
+          "The jj revset is invalid or could not be evaluated.",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    return buildRevsetSelection(this.operationId, records, resultLimit);
+  }
+
   public async resolveSelection(
     storedChangeIds: readonly string[],
     signal?: AbortSignal,
@@ -348,11 +474,7 @@ export class JjReadSession {
       throw new JjSelectionError("A refresh requires at least one change ID.");
     }
     for (const changeId of storedChangeIds) {
-      if (!CHANGE_ID_PATTERN.test(changeId)) {
-        throw new JjSelectionError(
-          `Stored change ID "${changeId}" is not a full jj change ID.`,
-        );
-      }
+      assertChangeId(changeId, "Stored");
     }
     const revset = storedChangeIds
       .map((changeId) => `change_id("${changeId}")`)
@@ -500,6 +622,31 @@ export class JjReadSession {
       signal,
     );
     return parseJsonLines(output, isCommit, "commit");
+  }
+
+  private async requireUniqueChange(
+    changeId: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const records = await this.readCommitRevset(
+      `change_id("${changeId}")`,
+      signal,
+    );
+    if (
+      records.length !== 1 ||
+      records[0]?.changeId !== changeId ||
+      records[0].divergent
+    ) {
+      throw new JjAmbiguousChangeError(changeId);
+    }
+  }
+}
+
+function assertChangeId(changeId: string, label: string): void {
+  if (!CHANGE_ID_PATTERN.test(changeId)) {
+    throw new JjSelectionError(
+      `${label} change ID "${changeId}" is not a full jj change ID.`,
+    );
   }
 }
 

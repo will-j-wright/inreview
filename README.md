@@ -2,13 +2,17 @@
 
 InReview is a VS Code extension for reviewing local [Jujutsu (`jj`)](https://jj-vcs.github.io/jj/latest/) changes without opening a pull request.
 
-Select the latest `X` changes, inspect their combined or per-change diffs in VS Code, and leave comments on the new side of the diff. A native local MCP bridge lets GitHub Copilot CLI read those comments, reply to them, and resolve them after it updates the code.
+Select a contiguous range of jj changes, inspect their combined or per-change
+diffs in VS Code, and leave comments on the new side of the diff. A native
+local MCP bridge lets GitHub Copilot CLI read those comments, reply to them,
+and resolve them after it updates the code.
 
 > InReview is an experimental local build. It is not published to the VS Code Marketplace.
 
 ## Features
 
-- Review the working-copy change at `@` and up to `X - 1` contiguous ancestors.
+- Review a historical contiguous change range, a revset, or the latest `X`
+  changes ending at `@`.
 - Switch between one combined stack diff and per-change diffs.
 - Use VS Code's native diff editor, syntax highlighting, themes, and Comments API.
 - Add comments to added lines, unchanged context lines, and whole files.
@@ -68,10 +72,14 @@ was closed as a duplicate.
 1. Open one trusted jj repository in VS Code.
 2. Open the **InReview** Activity Bar view.
 3. Run **InReview: Start Review**.
-4. Enter the number of latest changes to include. The default is `1`.
-5. Select a file under **Active Review** to open its native diff.
-6. Use the comment gutter on an added or unchanged new-side line, or use **Add File Comment**.
-7. After the change is rewritten, run **InReview: Refresh Review**.
+4. Choose **Choose Range**, **Current Stack (Last X)**, or
+   **Advanced: Enter jj Revset**.
+5. For a range, select the newest included change and then the oldest included
+   change. Use **Load older changes** to extend the history window.
+6. Confirm the ordered selection preview.
+7. Select a file under **Active Review** to open its native diff.
+8. Use the comment gutter on an added or unchanged new-side line, or use **Add File Comment**.
+9. After a selected change is rewritten, run **InReview: Refresh Review**.
 
 InReview stores immutable snapshots. A thread remains inline only when its complete target and context map exactly and uniquely to the refreshed diff. Otherwise, it becomes **Outdated** and stays available from the Comments view.
 
@@ -81,6 +89,16 @@ request can contain fewer than `X` changes. InReview rejects merges,
 divergent changes, and unresolved conflicts in the selected stack. Refresh
 follows the original stable change IDs after rewrites; it does not add a new
 child that later becomes `@`.
+
+**Choose Range** browses up to 200 ancestors of `@` in pages of 50. The newest
+and oldest selected changes are both included. InReview rejects a range that
+crosses a merge, contains a divergent change or unresolved conflict, or does
+not form one contiguous parent chain.
+
+**Advanced jj Revset** accepts any revset that resolves to 1–200 changes in one
+contiguous, single-parent chain. InReview previews the resolved changes and
+stores their full stable change IDs. It does not save or re-evaluate the
+original revset during refresh.
 
 Line comments are available only on added or unchanged lines on the new side.
 Deleted lines remain visible but are not commentable. Deleted files can receive
@@ -139,7 +157,7 @@ Use the Command Palette or the matching view and comment actions.
 
 | Command | Purpose |
 | --- | --- |
-| **InReview: Start Review** | Capture the latest change stack. |
+| **InReview: Start Review** | Select and capture a range, revset, or latest change stack. |
 | **InReview: Refresh Review** | Capture rewritten versions of the same stable change IDs. |
 | **InReview: Archive Review** | Make the active review read-only and move it to history. |
 | **InReview: Restore Archived Review** | Restore an archived review as the active review. |
@@ -171,7 +189,7 @@ requests. MCP traffic stays on a local per-user socket or named pipe.
 | Setting | Default | Description |
 | --- | --- | --- |
 | `inreview.jj.path` | `jj` | Command name or absolute path for the jj executable. |
-| `inreview.review.defaultChangeCount` | `1` | Initial value for the Last `X` prompt. |
+| `inreview.review.defaultChangeCount` | `1` | Initial value for the **Current Stack (Last X)** prompt. |
 | `inreview.review.largeDiffWarningLines` | `10000` | Changed-line count that requires confirmation. |
 | `inreview.mcp.enabled` | `true` | Register an eligible trusted workspace with the native MCP bridge. |
 | `inreview.logging.level` | `info` | Output-channel logging threshold. |
@@ -179,7 +197,7 @@ requests. MCP traffic stays on a local per-user socket or named pipe.
 ## Current limitations
 
 - One jj repository per VS Code window.
-- Only a contiguous, single-parent stack ending at `@`.
+- Reviews must contain one contiguous, single-parent change stack.
 - Merge changes and unresolved conflicts are rejected.
 - No comments on deleted lines.
 - Native per-file diffs rather than VS Code's proposed multi-file diff API.

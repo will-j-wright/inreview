@@ -39,7 +39,7 @@ export class ActiveReviewTree extends ReviewTreeSource {
           {
             id: "active:empty",
             label: "No active review",
-            description: "Start a review of the current jj stack.",
+            description: "Select jj changes to start a review.",
             contextValue: "inreview.active.empty",
             icon: "info",
             collapsible: "none",

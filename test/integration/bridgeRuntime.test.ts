@@ -17,9 +17,8 @@ import { makeReviewRecord } from "../unit/storageFixtures";
 
 const workRoot = path.resolve(".test-work", "native-bridge");
 const executable = path.resolve(
+  "dist",
   "bridge",
-  "target",
-  "debug",
   process.platform === "win32" ? "inreview-bridge.exe" : "inreview-bridge",
 );
 const cleanups: (() => Promise<void>)[] = [];
@@ -201,6 +200,12 @@ async function createHarness(root: string, name: string): Promise<Harness> {
 
 class UnusedRepository implements ReviewRepository {
   public constructor(public readonly repository: string) {}
+
+  public getCurrentOperationId(): Promise<string> {
+    return Promise.reject(
+      new Error("The bridge integration test does not capture snapshots."),
+    );
+  }
 
   public async openReadSession(): Promise<ReviewReadSession> {
     return Promise.reject(

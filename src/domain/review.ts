@@ -274,6 +274,7 @@ export const reviewSchema = z
     updatedAt: timestampSchema,
     archivedAt: timestampSchema.nullable(),
     repositoryFingerprint: sha256Schema,
+    selectionMode: z.enum(["last-x", "range", "revset"]).optional(),
     requestedChangeCount: z.number().int().positive(),
     orderedChangeIds: z.array(identifierSchema).min(1),
     currentSnapshotId: uuidSchema,

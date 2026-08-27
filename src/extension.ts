@@ -503,6 +503,17 @@ const vscodeUi = {
     items: readonly string[],
     options: vscode.QuickPickOptions,
   ): Promise<string | undefined> => vscode.window.showQuickPick(items, options),
+  showItemQuickPick: async (
+    items: readonly {
+      readonly id: string;
+      readonly label: string;
+      readonly description?: string;
+      readonly detail?: string;
+      readonly alwaysShow?: boolean;
+    }[],
+    options: vscode.QuickPickOptions,
+  ): Promise<string | undefined> =>
+    (await vscode.window.showQuickPick(items, options))?.id,
   showInformationMessage: async (message: string): Promise<unknown> =>
     vscode.window.showInformationMessage(message),
   showWarningMessage: async (message: string): Promise<unknown> =>
