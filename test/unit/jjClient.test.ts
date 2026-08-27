@@ -274,6 +274,80 @@ describe("JjClient", () => {
     expect(revset).not.toContain("@");
   });
 
+  it("lists bounded history and reports whether older changes are available", async () => {
+    const first = commit(1, ROOT_COMMIT_ID);
+    const second = commit(2, first.commitId as string);
+    const third = commit(3, second.commitId as string, {
+      currentWorkingCopy: true,
+    });
+    const { client, executor } = clientWithSession(
+      ok(jsonLine(first) + jsonLine(second) + jsonLine(third)),
+    );
+
+    const page = await (await client.openReadSession()).listHistory(2);
+
+    expect(page.commits.map(({ subject }) => subject)).toEqual([
+      "change 2",
+      "change 3",
+    ]);
+    expect(page.hasMore).toBe(true);
+    expect(page.reachedRoot).toBe(false);
+    expect(executor.requests[2]?.args).toContain("ancestors(@, 3)");
+    expect(executor.requests[2]?.args).toContain(OPERATION_ID);
+  });
+
+  it("selects an inclusive historical range that does not end at @", async () => {
+    const first = commit(1, ROOT_COMMIT_ID);
+    const second = commit(2, first.commitId as string);
+    const { client, executor } = clientWithSession(
+      ok(jsonLine(first)),
+      ok(jsonLine(second)),
+      ok(jsonLine(first) + jsonLine(second)),
+    );
+    const session = await client.openReadSession();
+
+    const selection = await session.selectRange(
+      first.changeId as string,
+      second.changeId as string,
+    );
+
+    expect(selection.changeIds).toEqual([first.changeId, second.changeId]);
+    expect(selection.headCommitId).toBe(second.commitId);
+    expect(selection.commits.some(({ currentWorkingCopy }) => currentWorkingCopy)).toBe(false);
+    expect(executor.requests[4]?.args).toContain(
+      `change_id("${String(first.changeId)}")::change_id("${String(second.changeId)}")`,
+    );
+  });
+
+  it("validates revset results without interpreting the input as shell syntax", async () => {
+    const first = commit(1, ROOT_COMMIT_ID);
+    const { client, executor } = clientWithSession(ok(jsonLine(first)));
+    const session = await client.openReadSession();
+    const revset = 'description("$(touch nope)")';
+
+    const selection = await session.selectRevset(revset, 10);
+
+    expect(selection.changeIds).toEqual([first.changeId]);
+    expect(executor.requests[2]?.args).toContain(revset);
+    expect(executor.requests[2]?.args).not.toContain("sh");
+  });
+
+  it("rejects empty and oversized revset selections", async () => {
+    const first = commit(1, ROOT_COMMIT_ID);
+    const second = commit(2, first.commitId as string);
+    const client = clientWithSession(
+      ok(jsonLine(first) + jsonLine(second)),
+    ).client;
+    const session = await client.openReadSession();
+
+    await expect(session.selectRevset(" ", 10)).rejects.toBeInstanceOf(
+      JjSelectionError,
+    );
+    await expect(session.selectRevset("all()", 1)).rejects.toThrow(
+      "more than 1 changes",
+    );
+  });
+
   it("rejects missing, reordered, and duplicate refresh results as stale", async () => {
     const first = commit(1, ROOT_COMMIT_ID);
     const second = commit(2, first.commitId as string);

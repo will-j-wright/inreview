@@ -5,6 +5,7 @@ import { parseReviewRecord, type ReviewRecord } from "../domain/comments";
 import { StorageError } from "../domain/errors";
 import { JjClient, type JjClientOptions } from "../jj/jjClient";
 import { shouldWarnForChangedLines } from "../jj/snapshotBuilder";
+import type { JjCommit, ReviewSelection } from "../jj/types";
 import { repositoryFingerprint, ReviewStore } from "../storage/reviewStore";
 import type { ReviewStoreOptions, StorageLocation } from "../storage/reviewStore";
 import {
@@ -28,10 +29,13 @@ import type {
   CommentProjectionHook,
   ReviewCapture,
   ReviewChangeEvent,
+  ReviewReadSession,
   ReviewMutationOptions,
   ReviewRepository,
   ReviewSubscription,
 } from "./types";
+
+const MAX_INTERACTIVE_SELECTION = 200;
 
 export interface StartReviewOptions {
   readonly requestedChangeCount: number;
@@ -43,6 +47,64 @@ export interface StartReviewResult {
   readonly record: ReviewRecord;
   readonly actualChangeCount: number;
   readonly truncatedAtRoot: boolean;
+}
+
+export type ReviewSelectionMode = "last-x" | "range" | "revset";
+
+export interface ReviewSelectionCandidate {
+  readonly changeId: string;
+  readonly commitId: string;
+  readonly parentCommitIds: readonly string[];
+  readonly normalChangeId: string;
+  readonly subject: string;
+  readonly currentWorkingCopy: boolean;
+  readonly conflict: boolean;
+  readonly divergent: boolean;
+  readonly merge: boolean;
+}
+
+export interface ReviewHistory {
+  readonly commits: readonly ReviewSelectionCandidate[];
+  readonly requestedCount: number;
+  readonly hasMore: boolean;
+  readonly reachedRoot: boolean;
+}
+
+export interface ReviewSelectionPreview {
+  readonly mode: ReviewSelectionMode;
+  readonly operationId: string;
+  readonly requestedChangeCount: number;
+  readonly actualChangeCount: number;
+  readonly truncatedAtRoot: boolean;
+  readonly commits: readonly ReviewSelectionCandidate[];
+}
+
+export interface StartSelectedReviewOptions {
+  readonly activeReviewIdToArchive?: string;
+  readonly confirmLargeDiff?: boolean;
+  readonly signal?: AbortSignal;
+}
+
+export interface ReviewStartSession {
+  readonly operationId: string;
+  listHistory(count: number, signal?: AbortSignal): Promise<ReviewHistory>;
+  selectLast(
+    count: number,
+    signal?: AbortSignal,
+  ): Promise<ReviewSelectionPreview>;
+  selectRange(
+    oldestChangeId: string,
+    newestChangeId: string,
+    signal?: AbortSignal,
+  ): Promise<ReviewSelectionPreview>;
+  selectRevset(
+    revset: string,
+    signal?: AbortSignal,
+  ): Promise<ReviewSelectionPreview>;
+  start(
+    preview: ReviewSelectionPreview,
+    options?: StartSelectedReviewOptions,
+  ): Promise<StartReviewResult>;
 }
 
 export interface ReviewServiceOptions {
@@ -201,7 +263,17 @@ export class ReviewService {
       if (active !== undefined) {
         throw new ActiveReviewConflictError(active.review.id);
       }
-      return this.prepareAndCommitStart(options);
+      const session = await this.#repository.openReadSession(options.signal);
+      const selection = await session.selectLast(
+        options.requestedChangeCount,
+        options.signal,
+      );
+      return this.prepareAndCommitStart(
+        session,
+        selection,
+        "last-x",
+        options,
+      );
     });
   }
 
@@ -211,8 +283,120 @@ export class ReviewService {
     validateChangeCount(options.requestedChangeCount);
     return runRepositoryMutation(this.storageKey, async () => {
       const active = await this.#store.getActiveReview();
-      return this.prepareAndCommitStart(options, active);
+      const session = await this.#repository.openReadSession(options.signal);
+      const selection = await session.selectLast(
+        options.requestedChangeCount,
+        options.signal,
+      );
+      return this.prepareAndCommitStart(
+        session,
+        selection,
+        "last-x",
+        options,
+        active,
+      );
     });
+  }
+
+  public async beginStartReview(
+    signal?: AbortSignal,
+  ): Promise<ReviewStartSession> {
+    const readSession = await this.#repository.openReadSession(signal);
+    const previewSelections = new WeakMap<
+      ReviewSelectionPreview,
+      ReviewSelection
+    >();
+    const toPreview = (
+      mode: ReviewSelectionMode,
+      selection: ReviewSelection,
+    ): ReviewSelectionPreview => {
+      const preview: ReviewSelectionPreview = {
+        mode,
+        operationId: selection.operationId,
+        requestedChangeCount: selection.requestedCount,
+        actualChangeCount: selection.actualCount,
+        truncatedAtRoot: selection.truncatedAtRoot,
+        commits: selection.commits.map(toSelectionCandidate),
+      };
+      previewSelections.set(preview, selection);
+      return preview;
+    };
+    return {
+      operationId: readSession.operationId,
+      listHistory: async (count, listSignal) => {
+        const page = await readSession.listHistory(count, listSignal);
+        return {
+          commits: page.commits.map(toSelectionCandidate),
+          requestedCount: page.requestedCount,
+          hasMore: page.hasMore,
+          reachedRoot: page.reachedRoot,
+        };
+      },
+      selectLast: async (count, selectSignal) =>
+        toPreview("last-x", await readSession.selectLast(count, selectSignal)),
+      selectRange: async (oldestChangeId, newestChangeId, selectSignal) =>
+        toPreview(
+          "range",
+          await readSession.selectRange(
+            oldestChangeId,
+            newestChangeId,
+            selectSignal,
+          ),
+        ),
+      selectRevset: async (revset, selectSignal) =>
+        toPreview(
+          "revset",
+          await readSession.selectRevset(
+            revset,
+            MAX_INTERACTIVE_SELECTION,
+            selectSignal,
+          ),
+        ),
+      start: async (preview, startOptions = {}) => {
+        const selection = previewSelections.get(preview);
+        if (
+          selection === undefined ||
+          preview.operationId !== readSession.operationId
+        ) {
+          throw new StaleReviewError(
+            "The review selection belongs to another jj operation.",
+          );
+        }
+        return runRepositoryMutation(this.storageKey, async () => {
+          const currentOperationId =
+            await this.#repository.getCurrentOperationId(startOptions.signal);
+          if (currentOperationId !== readSession.operationId) {
+            throw new StaleReviewError(
+              "The repository changed while the review selection was open. Reload the selection and try again.",
+            );
+          }
+          const active = await this.#store.getActiveReview();
+          const activeToArchive =
+            startOptions.activeReviewIdToArchive === undefined
+              ? undefined
+              : active;
+          if (startOptions.activeReviewIdToArchive === undefined) {
+            if (active !== undefined) {
+              throw new ActiveReviewConflictError(active.review.id);
+            }
+          } else if (
+            active !== undefined &&
+            active.review.id !== startOptions.activeReviewIdToArchive
+          ) {
+            throw new StaleReviewError(
+              "The active review changed while the review selection was open.",
+            );
+          }
+          return this.prepareAndCommitStart(
+            readSession,
+            selection,
+            preview.mode,
+            startOptions,
+            activeToArchive,
+          );
+        });
+      },
+    };
   }
 
   public async refreshReview(
@@ -371,14 +555,12 @@ export class ReviewService {
   }
 
   private async prepareAndCommitStart(
-    options: StartReviewOptions,
+    session: ReviewReadSession,
+    selection: ReviewSelection,
+    selectionMode: ReviewSelectionMode,
+    options: Pick<StartSelectedReviewOptions, "confirmLargeDiff" | "signal">,
     activeToArchive?: ReviewRecord,
   ): Promise<StartReviewResult> {
-    const session = await this.#repository.openReadSession(options.signal);
-    const selection = await session.selectLast(
-      options.requestedChangeCount,
-      options.signal,
-    );
     const preflight = await this.#capture.preflight(
       selection,
       session,
@@ -412,7 +594,8 @@ export class ReviewService {
         updatedAt: createdAt,
         archivedAt: null,
         repositoryFingerprint: this.storageKey,
-        requestedChangeCount: options.requestedChangeCount,
+        selectionMode,
+        requestedChangeCount: selection.requestedCount,
         orderedChangeIds: [...selection.changeIds],
         currentSnapshotId: prepared.snapshot.id,
         snapshotIds: [prepared.snapshot.id],
@@ -491,6 +674,20 @@ export class ReviewService {
       }
     }
   }
+}
+
+function toSelectionCandidate(commit: JjCommit): ReviewSelectionCandidate {
+  return {
+    changeId: commit.changeId,
+    commitId: commit.commitId,
+    parentCommitIds: [...commit.parentCommitIds],
+    normalChangeId: commit.normalChangeId,
+    subject: commit.subject,
+    currentWorkingCopy: commit.currentWorkingCopy,
+    conflict: commit.conflict,
+    divergent: commit.divergent,
+    merge: commit.parentCommitIds.length !== 1,
+  };
 }
 
 function validateChangeCount(count: number): void {

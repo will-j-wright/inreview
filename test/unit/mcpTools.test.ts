@@ -429,6 +429,10 @@ async function createHarness(
 class UnusedRepository implements ReviewRepository {
   public readonly repository = repositoryRoot;
 
+  public getCurrentOperationId(): Promise<string> {
+    return Promise.reject(new Error("The MCP tool test does not capture snapshots."));
+  }
+
   public async openReadSession(): Promise<ReviewReadSession> {
     return Promise.reject(new Error("The MCP tool test does not capture snapshots."));
   }

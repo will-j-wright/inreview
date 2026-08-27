@@ -1,8 +1,12 @@
 import type { ReviewRecord } from "../domain/comments";
+import { JjSelectionError } from "../jj/errors";
 import { LargeDiffConfirmationRequiredError } from "../review/errors";
 import type {
   RefreshReviewResult,
+  ReviewSelectionCandidate,
+  ReviewSelectionPreview,
   ReviewService,
+  ReviewStartSession,
   StartReviewResult,
 } from "../review";
 import type { RevealFileRequest } from "./activeReviewTree";
@@ -11,6 +15,16 @@ import { mapUserFacingError } from "./errors";
 
 const LAST_CHANGE_COUNT_KEY = "inreview.review.lastChangeCount";
 const DISPLAY_MODE_KEY = "inreview.review.displayMode";
+const INITIAL_HISTORY_COUNT = 50;
+const MAX_HISTORY_COUNT = 200;
+
+export interface CommandQuickPickItem {
+  readonly id: string;
+  readonly label: string;
+  readonly description?: string;
+  readonly detail?: string;
+  readonly alwaysShow?: boolean;
+}
 
 export interface CommandUi {
   showInputBox(options: {
@@ -21,6 +35,10 @@ export interface CommandUi {
   }): Promise<string | undefined>;
   showQuickPick(
     items: readonly string[],
+    options: { readonly title: string; readonly placeHolder?: string },
+  ): Promise<string | undefined>;
+  showItemQuickPick(
+    items: readonly CommandQuickPickItem[],
     options: { readonly title: string; readonly placeHolder?: string },
   ): Promise<string | undefined>;
   showInformationMessage(message: string): Promise<unknown>;
@@ -60,6 +78,8 @@ export interface CommandControllerOptions {
 }
 
 export class ReviewCommandController {
+  #startingReview = false;
+
   public constructor(private readonly options: CommandControllerOptions) {}
 
   public get displayMode(): "combined" | "per-change" {
@@ -76,30 +96,16 @@ export class ReviewCommandController {
     if (service === undefined) {
       return;
     }
-    const remembered = this.options.workspaceState.get(
-      LAST_CHANGE_COUNT_KEY,
-      this.options.defaultChangeCount,
-    );
-    const input = await this.options.ui.showInputBox({
-      title: "Start Review",
-      prompt: "Review the last X jj changes.",
-      value: String(remembered),
-      validateInput: validatePositiveInteger,
-    });
-    if (input === undefined) {
+    if (this.#startingReview) {
+      await this.options.ui.showInformationMessage(
+        "A Start Review selection is already open.",
+      );
       return;
     }
-    const count = Number(input.trim());
-    const validation = validatePositiveInteger(input);
-    if (validation !== undefined) {
-      await this.options.ui.showErrorMessage(validation);
-      return;
-    }
-    await this.options.workspaceState.update(LAST_CHANGE_COUNT_KEY, count);
-
+    this.#startingReview = true;
     try {
       const active = await service.getActiveReviewOrUndefined();
-      let archiveActive = false;
+      let activeReviewIdToArchive: string | undefined;
       if (active !== undefined) {
         const choice = await this.options.ui.showQuickPick(
           ["Archive Current Review", "Cancel"],
@@ -111,20 +117,59 @@ export class ReviewCommandController {
         if (choice !== "Archive Current Review") {
           return;
         }
-        archiveActive = true;
+        activeReviewIdToArchive = active.review.id;
       }
-      const result = await this.startWithLargeDiffPrompt(
-        service,
-        count,
-        archiveActive,
+      const method = await this.options.ui.showQuickPick(
+        [
+          "Choose Range",
+          "Current Stack (Last X)",
+          "Advanced: Enter jj Revset",
+        ],
+        {
+          title: "Start Review",
+          placeHolder: "Choose which jj changes to review.",
+        },
       );
-      if (result?.truncatedAtRoot === true) {
+      if (method === undefined) {
+        return;
+      }
+      const session = await service.beginStartReview();
+      let result: StartReviewResult | undefined;
+      while (result === undefined) {
+        const preview =
+          method === "Choose Range"
+            ? await this.chooseRangeSelection(session)
+            : method === "Current Stack (Last X)"
+              ? await this.chooseLastSelection(session)
+              : await this.chooseRevsetSelection(session);
+        if (preview === undefined) {
+          return;
+        }
+        const confirmation = await this.confirmSelectionPreview(preview);
+        if (confirmation === "cancel") {
+          return;
+        }
+        if (confirmation === "back") {
+          continue;
+        }
+        result = await this.startWithLargeDiffPrompt(
+          session,
+          preview,
+          activeReviewIdToArchive,
+        );
+        if (result === undefined) {
+          return;
+        }
+      }
+      if (result.truncatedAtRoot) {
         await this.options.ui.showInformationMessage(
           `The repository has only ${String(result.actualChangeCount)} eligible ancestor changes. InReview included all of them.`,
         );
       }
     } catch (error) {
       await this.reportError("Could not start the review", error);
+    } finally {
+      this.#startingReview = false;
     }
   }
 
@@ -287,20 +332,17 @@ export class ReviewCommandController {
   }
 
   private async startWithLargeDiffPrompt(
-    service: ReviewCommandService,
-    count: number,
-    archiveActive: boolean,
+    session: ReviewStartSession,
+    preview: ReviewSelectionPreview,
+    activeReviewIdToArchive: string | undefined,
   ): Promise<StartReviewResult | undefined> {
     const start = async (confirmLargeDiff: boolean): Promise<StartReviewResult> =>
-      archiveActive
-        ? service.archiveAndStartReview({
-            requestedChangeCount: count,
-            confirmLargeDiff,
-          })
-        : service.startReview({
-            requestedChangeCount: count,
-            confirmLargeDiff,
-          });
+      session.start(preview, {
+        ...(activeReviewIdToArchive === undefined
+          ? {}
+          : { activeReviewIdToArchive }),
+        confirmLargeDiff,
+      });
     try {
       return await start(false);
     } catch (error) {
@@ -311,6 +353,169 @@ export class ReviewCommandController {
         ? start(true)
         : undefined;
     }
+  }
+
+  private async chooseLastSelection(
+    session: ReviewStartSession,
+  ): Promise<ReviewSelectionPreview | undefined> {
+    const remembered = this.options.workspaceState.get(
+      LAST_CHANGE_COUNT_KEY,
+      this.options.defaultChangeCount,
+    );
+    const input = await this.options.ui.showInputBox({
+      title: "Current Stack",
+      prompt: "Review the last X jj changes ending at @.",
+      value: String(remembered),
+      validateInput: validatePositiveInteger,
+    });
+    if (input === undefined) {
+      return undefined;
+    }
+    const validation = validatePositiveInteger(input);
+    if (validation !== undefined) {
+      await this.options.ui.showErrorMessage(validation);
+      return undefined;
+    }
+    const count = Number(input.trim());
+    await this.options.workspaceState.update(LAST_CHANGE_COUNT_KEY, count);
+    return session.selectLast(count);
+  }
+
+  private async chooseRangeSelection(
+    session: ReviewStartSession,
+  ): Promise<ReviewSelectionPreview | undefined> {
+    let historyCount = INITIAL_HISTORY_COUNT;
+    let newestChangeId: string | undefined;
+    for (;;) {
+      const history = await session.listHistory(historyCount);
+      const selectable = history.commits.filter(isSelectableCandidate);
+      if (selectable.length === 0) {
+        await this.options.ui.showInformationMessage(
+          "No conflict-free, single-parent changes are available in this history.",
+        );
+        return undefined;
+      }
+      if (newestChangeId === undefined) {
+        const items = selectable
+          .slice()
+          .reverse()
+          .map((commit) => candidateItem("newest", commit));
+        if (history.hasMore && historyCount < MAX_HISTORY_COUNT) {
+          items.push(loadOlderItem());
+        }
+        const picked = await this.options.ui.showItemQuickPick(items, {
+          title: "Newest included change",
+          placeHolder: "Search by description or change ID.",
+        });
+        if (picked === undefined) {
+          return undefined;
+        }
+        if (picked === "load-older") {
+          historyCount = Math.min(
+            historyCount + INITIAL_HISTORY_COUNT,
+            MAX_HISTORY_COUNT,
+          );
+          continue;
+        }
+        newestChangeId = picked.slice("newest:".length);
+      }
+
+      const newest = history.commits.find(
+        ({ changeId }) => changeId === newestChangeId,
+      );
+      if (newest === undefined) {
+        newestChangeId = undefined;
+        continue;
+      }
+      const ancestors = traceSelectableAncestors(newest, history.commits);
+      const oldestItems = ancestors.map((commit, index) => ({
+        ...candidateItem("oldest", commit),
+        label:
+          index === 0
+            ? `$(check) This change only — ${candidateLabel(commit)}`
+            : candidateLabel(commit),
+      }));
+      if (history.hasMore && historyCount < MAX_HISTORY_COUNT) {
+        oldestItems.push(loadOlderItem());
+      }
+      const oldestPicked = await this.options.ui.showItemQuickPick(oldestItems, {
+        title: "Oldest included change",
+        placeHolder: "Every change through the selected newest change is included.",
+      });
+      if (oldestPicked === undefined) {
+        return undefined;
+      }
+      if (oldestPicked === "load-older") {
+        historyCount = Math.min(
+          historyCount + INITIAL_HISTORY_COUNT,
+          MAX_HISTORY_COUNT,
+        );
+        continue;
+      }
+      return session.selectRange(
+        oldestPicked.slice("oldest:".length),
+        newest.changeId,
+      );
+    }
+  }
+
+  private async chooseRevsetSelection(
+    session: ReviewStartSession,
+  ): Promise<ReviewSelectionPreview | undefined> {
+    let value = "";
+    for (;;) {
+      const input = await this.options.ui.showInputBox({
+        title: "Advanced jj Revset",
+        prompt: "Enter a revset that resolves to one contiguous single-parent stack.",
+        value,
+        validateInput: validateRevsetInput,
+      });
+      if (input === undefined) {
+        return undefined;
+      }
+      const validation = validateRevsetInput(input);
+      if (validation !== undefined) {
+        await this.options.ui.showErrorMessage(validation);
+        value = input;
+        continue;
+      }
+      try {
+        return await session.selectRevset(input.trim());
+      } catch (error) {
+        if (!(error instanceof JjSelectionError)) {
+          throw error;
+        }
+        await this.options.ui.showErrorMessage(error.message);
+        value = input;
+      }
+    }
+  }
+
+  private async confirmSelectionPreview(
+    preview: ReviewSelectionPreview,
+  ): Promise<"start" | "back" | "cancel"> {
+    const summary = preview.commits
+      .slice(0, 5)
+      .map(
+        (commit) =>
+          `${commit.changeId.slice(0, 8)} ${commit.subject.trim() || "(no description)"}`,
+      )
+      .join(" -> ") +
+      (preview.commits.length > 5
+        ? ` -> ... ${String(preview.commits.length - 5)} more`
+        : "");
+    const choice = await this.options.ui.showQuickPick(
+      ["Start Review", "Back", "Cancel"],
+      {
+        title: `Review ${String(preview.actualChangeCount)} ${preview.actualChangeCount === 1 ? "change" : "changes"}`,
+        placeHolder: summary,
+      },
+    );
+    return choice === "Start Review"
+      ? "start"
+      : choice === "Back"
+        ? "back"
+        : "cancel";
   }
 
   private async confirmLargeDiff(changedLineCount: number): Promise<boolean> {
@@ -394,6 +599,66 @@ export function validatePositiveInteger(value: string): string | undefined {
     : "Enter a positive whole number.";
 }
 
+export function validateRevsetInput(value: string): string | undefined {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    return "Enter a jj revset.";
+  }
+  if (normalized.length > 4096 || normalized.includes("\0")) {
+    return "Use a jj revset with no more than 4096 characters.";
+  }
+  return undefined;
+}
+
+function isSelectableCandidate(
+  candidate: ReviewSelectionCandidate,
+): boolean {
+  return !candidate.conflict && !candidate.divergent && !candidate.merge;
+}
+
+function candidateLabel(candidate: ReviewSelectionCandidate): string {
+  return candidate.subject.trim() || "(no description)";
+}
+
+function candidateItem(
+  prefix: "newest" | "oldest",
+  candidate: ReviewSelectionCandidate,
+): CommandQuickPickItem {
+  return {
+    id: `${prefix}:${candidate.changeId}`,
+    label: candidate.currentWorkingCopy
+      ? `$(circle-filled) ${candidateLabel(candidate)}`
+      : candidateLabel(candidate),
+    description: candidate.changeId.slice(0, 12),
+    ...(candidate.currentWorkingCopy
+      ? { detail: "Current working copy (@)" }
+      : {}),
+  };
+}
+
+function loadOlderItem(): CommandQuickPickItem {
+  return {
+    id: "load-older",
+    label: "$(history) Load older changes",
+    alwaysShow: true,
+  };
+}
+
+function traceSelectableAncestors(
+  newest: ReviewSelectionCandidate,
+  commits: readonly ReviewSelectionCandidate[],
+): readonly ReviewSelectionCandidate[] {
+  const byCommitId = new Map(commits.map((commit) => [commit.commitId, commit]));
+  const result: ReviewSelectionCandidate[] = [];
+  let current: ReviewSelectionCandidate | undefined = newest;
+  while (current !== undefined && isSelectableCandidate(current)) {
+    result.push(current);
+    const parentId: string | undefined = current.parentCommitIds[0];
+    current = parentId === undefined ? undefined : byCommitId.get(parentId);
+  }
+  return result;
+}
+
 function reviewIdFromArgument(value: unknown): string | undefined {
   if (typeof value === "string" && value.length > 0) {
     return value;
@@ -418,6 +683,7 @@ export type ReviewCommandService = Pick<
   ReviewService,
   | "getActiveReviewOrUndefined"
   | "getActiveReview"
+  | "beginStartReview"
   | "startReview"
   | "archiveAndStartReview"
   | "refreshReview"

@@ -6,10 +6,24 @@ import type {
   SnapshotPreflight,
   SnapshotReadSession,
 } from "../jj/snapshotBuilder";
-import type { ReviewSelection } from "../jj/types";
+import type { ReviewHistoryPage, ReviewSelection } from "../jj/types";
 
 export interface ReviewReadSession extends SnapshotReadSession {
+  listHistory(
+    count: number,
+    signal?: AbortSignal,
+  ): Promise<ReviewHistoryPage>;
   selectLast(count: number, signal?: AbortSignal): Promise<ReviewSelection>;
+  selectRange(
+    oldestChangeId: string,
+    newestChangeId: string,
+    signal?: AbortSignal,
+  ): Promise<ReviewSelection>;
+  selectRevset(
+    revset: string,
+    resultLimit: number,
+    signal?: AbortSignal,
+  ): Promise<ReviewSelection>;
   resolveSelection(
     storedChangeIds: readonly string[],
     signal?: AbortSignal,
@@ -18,6 +32,7 @@ export interface ReviewReadSession extends SnapshotReadSession {
 
 export interface ReviewRepository {
   readonly repository: string;
+  getCurrentOperationId(signal?: AbortSignal): Promise<string>;
   openReadSession(signal?: AbortSignal): Promise<ReviewReadSession>;
 }
 

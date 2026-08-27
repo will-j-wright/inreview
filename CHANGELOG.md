@@ -4,6 +4,9 @@
 
 ### Added
 
+- Select a historical contiguous range through searchable newest and oldest
+  change pickers, or enter an advanced jj revset and preview its resolved
+  changes before capture.
 - Review `@` and its recent jj ancestors as a combined stack or as individual
   changes.
 - View native diffs for added, modified, deleted, renamed, copied, binary, and
@@ -22,8 +25,9 @@
 
 - Requires VS Code 1.96 or newer, jj 0.44 or newer, and one trusted local jj
   repository per window.
-- Supports only contiguous, single-parent stacks that end at `@`. Merges and
-  unresolved selected conflicts are rejected.
+- Supports only contiguous, single-parent stacks. The default range browser
+  shows up to 200 ancestors of `@`; other selections require a revset. Merges
+  and unresolved selected conflicts are rejected.
 - Deleted lines cannot receive line comments. Use a file comment instead.
 - The MCP bridge relies on per-user operating-system IPC permissions and has no
   application token. Do not use it in an untrusted shared-user environment.

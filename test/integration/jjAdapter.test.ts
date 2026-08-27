@@ -78,6 +78,32 @@ describe.skipIf(!jjAvailable())("jj adapter integration", () => {
     expect(fewer.truncatedAtRoot).toBe(true);
   });
 
+  it("selects a historical range and the same range through a revset", async () => {
+    const session = await new JjClient(REPOSITORY).openReadSession();
+    const history = await session.listHistory(3);
+    const [oldest, middle] = history.commits;
+    expect(oldest).toBeDefined();
+    expect(middle).toBeDefined();
+
+    const range = await session.selectRange(
+      oldest?.changeId ?? "",
+      middle?.changeId ?? "",
+    );
+    const revset = await session.selectRevset(
+      `change_id("${oldest?.changeId ?? ""}")::change_id("${middle?.changeId ?? ""}")`,
+      10,
+    );
+
+    expect(range.commits.map(({ subject }) => subject)).toEqual([
+      "oldest",
+      "middle",
+    ]);
+    expect(range.commits.some(({ currentWorkingCopy }) => currentWorkingCopy)).toBe(
+      false,
+    );
+    expect(revset.changeIds).toEqual(range.changeIds);
+  });
+
   it("reads operation data, Git diffs, metadata, and exact binary bytes", async () => {
     const session = await new JjClient(REPOSITORY).openReadSession();
     const selection = await session.selectLast(3);

@@ -70,3 +70,10 @@ export interface ReviewSelection {
   readonly baseCommitId: string;
   readonly headCommitId: string;
 }
+
+export interface ReviewHistoryPage {
+  readonly commits: readonly JjCommit[];
+  readonly requestedCount: number;
+  readonly hasMore: boolean;
+  readonly reachedRoot: boolean;
+}

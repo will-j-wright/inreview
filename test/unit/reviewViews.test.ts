@@ -13,6 +13,10 @@ import {
   type ReviewCommandService,
   type WorkspacePreferenceStore,
 } from "../../src/vscode/commands";
+import type {
+  ReviewSelectionPreview,
+  ReviewStartSession,
+} from "../../src/review";
 import { buildHistoryReviewItem } from "../../src/vscode/historyTree";
 import { makeReviewRecord } from "./storageFixtures";
 
@@ -93,7 +97,8 @@ describe("review command flows", () => {
   it("archives an active review, confirms a large diff, and reports root truncation", async () => {
     const record = makeReviewRecord(fingerprint);
     const service = fakeService(record);
-    service.archiveAndStartReview = vi
+    const preview = selectionPreview();
+    const start = vi
       .fn()
       .mockRejectedValueOnce(new LargeDiffConfirmationRequiredError(20_000, 10_000))
       .mockResolvedValueOnce({
@@ -101,18 +106,28 @@ describe("review command flows", () => {
         actualChangeCount: 2,
         truncatedAtRoot: true,
       });
-    const ui = new FakeUi("3", ["Archive Current Review", "Continue"]);
+    const session = fakeStartSession(preview, start);
+    service.beginStartReview = vi.fn().mockResolvedValue(session);
+    const ui = new FakeUi(
+      "3",
+      [
+        "Archive Current Review",
+        "Current Stack (Last X)",
+        "Start Review",
+        "Continue",
+      ],
+    );
     const state = new FakeState();
     const controller = controllerFor(service, ui, state);
 
     await controller.startReview();
 
-    expect(service.archiveAndStartReview).toHaveBeenNthCalledWith(1, {
-      requestedChangeCount: 3,
+    expect(start).toHaveBeenNthCalledWith(1, preview, {
+      activeReviewIdToArchive: record.review.id,
       confirmLargeDiff: false,
     });
-    expect(service.archiveAndStartReview).toHaveBeenNthCalledWith(2, {
-      requestedChangeCount: 3,
+    expect(start).toHaveBeenNthCalledWith(2, preview, {
+      activeReviewIdToArchive: record.review.id,
       confirmLargeDiff: true,
     });
     expect(state.get("inreview.review.lastChangeCount", 0)).toBe(3);
@@ -143,6 +158,74 @@ describe("review command flows", () => {
     expect(modeChanged).toHaveBeenCalledOnce();
     expect(service.renameActiveReview).not.toHaveBeenCalled();
   });
+
+  it("selects a historical range by newest and oldest included changes", async () => {
+    const record = makeReviewRecord(fingerprint);
+    const service = fakeService(record);
+    service.getActiveReviewOrUndefined = vi.fn().mockResolvedValue(undefined);
+    const oldest = selectionCandidate("k", "1", "Oldest");
+    const newest = selectionCandidate("l", "2", "Newest", oldest.commitId);
+    const preview = selectionPreview("range", [oldest, newest]);
+    const selectRange = vi.fn().mockResolvedValue(preview);
+    const start = vi.fn().mockResolvedValue({
+      record,
+      actualChangeCount: 2,
+      truncatedAtRoot: false,
+    });
+    service.beginStartReview = vi.fn().mockResolvedValue({
+      operationId: preview.operationId,
+      listHistory: vi.fn().mockResolvedValue({
+        commits: [oldest, newest],
+        requestedCount: 50,
+        hasMore: false,
+        reachedRoot: true,
+      }),
+      selectLast: vi.fn(),
+      selectRange,
+      selectRevset: vi.fn(),
+      start,
+    } satisfies ReviewStartSession);
+    const ui = new FakeUi(
+      undefined,
+      ["Choose Range", "Start Review"],
+      [`newest:${newest.changeId}`, `oldest:${oldest.changeId}`],
+    );
+
+    await controllerFor(service, ui, new FakeState()).startReview();
+
+    expect(selectRange).toHaveBeenCalledWith(oldest.changeId, newest.changeId);
+    expect(start).toHaveBeenCalledWith(preview, {
+      confirmLargeDiff: false,
+    });
+  });
+
+  it("previews an advanced revset before starting the review", async () => {
+    const record = makeReviewRecord(fingerprint);
+    const service = fakeService(record);
+    service.getActiveReviewOrUndefined = vi.fn().mockResolvedValue(undefined);
+    const preview = selectionPreview("revset");
+    const selectRevset = vi.fn().mockResolvedValue(preview);
+    const start = vi.fn().mockResolvedValue({
+      record,
+      actualChangeCount: 1,
+      truncatedAtRoot: false,
+    });
+    service.beginStartReview = vi.fn().mockResolvedValue({
+      ...fakeStartSession(preview, start),
+      selectRevset,
+    } satisfies ReviewStartSession);
+    const ui = new FakeUi(
+      "description(review)",
+      ["Advanced: Enter jj Revset", "Start Review"],
+    );
+
+    await controllerFor(service, ui, new FakeState()).startReview();
+
+    expect(selectRevset).toHaveBeenCalledWith("description(review)");
+    expect(start).toHaveBeenCalledWith(preview, {
+      confirmLargeDiff: false,
+    });
+  });
 });
 
 class FakeState implements WorkspacePreferenceStore {
@@ -166,6 +249,7 @@ class FakeUi implements CommandUi {
   public constructor(
     private readonly input: string | undefined,
     private readonly picks: string[],
+    private readonly itemPicks: string[] = [],
   ) {}
 
   public showInputBox(): Promise<string | undefined> {
@@ -174,6 +258,10 @@ class FakeUi implements CommandUi {
 
   public showQuickPick(): Promise<string | undefined> {
     return Promise.resolve(this.picks.shift());
+  }
+
+  public showItemQuickPick(): Promise<string | undefined> {
+    return Promise.resolve(this.itemPicks.shift());
   }
 
   public showInformationMessage(message: string): Promise<unknown> {
@@ -195,13 +283,14 @@ class FakeUi implements CommandUi {
 function fakeService(
   record: ReturnType<typeof makeReviewRecord>,
 ): ReviewCommandService & {
-  archiveAndStartReview: ReturnType<typeof vi.fn>;
+  beginStartReview: ReturnType<typeof vi.fn>;
   refreshReview: ReturnType<typeof vi.fn>;
   renameActiveReview: ReturnType<typeof vi.fn>;
 } {
   return {
     getActiveReviewOrUndefined: vi.fn().mockResolvedValue(record),
     getActiveReview: vi.fn().mockResolvedValue(record),
+    beginStartReview: vi.fn(),
     startReview: vi.fn(),
     archiveAndStartReview: vi.fn(),
     refreshReview: vi.fn(),
@@ -212,9 +301,65 @@ function fakeService(
     deleteArchivedReview: vi.fn(),
     getReview: vi.fn().mockResolvedValue(record),
   } as ReviewCommandService & {
-    archiveAndStartReview: ReturnType<typeof vi.fn>;
+    beginStartReview: ReturnType<typeof vi.fn>;
     refreshReview: ReturnType<typeof vi.fn>;
     renameActiveReview: ReturnType<typeof vi.fn>;
+  };
+}
+
+function selectionPreview(
+  mode: ReviewSelectionPreview["mode"] = "last-x",
+  commits: readonly ReviewSelectionPreview["commits"][number][] = [
+    selectionCandidate("k", "1", "Selected change"),
+  ],
+): ReviewSelectionPreview {
+  return {
+    mode,
+    operationId: "a".repeat(128),
+    requestedChangeCount: 3,
+    actualChangeCount: commits.length,
+    truncatedAtRoot: mode === "last-x",
+    commits,
+  };
+}
+
+function selectionCandidate(
+  changeLetter: string,
+  commitDigit: string,
+  subject: string,
+  parentCommitId = "0".repeat(40),
+): ReviewSelectionPreview["commits"][number] {
+  return {
+    changeId: changeLetter.repeat(32),
+    commitId: commitDigit.repeat(40),
+    parentCommitIds: [parentCommitId],
+    normalChangeId: commitDigit.repeat(32),
+    subject,
+    currentWorkingCopy: false,
+    conflict: false,
+    divergent: false,
+    merge: false,
+  };
+}
+
+function fakeStartSession(
+  preview: ReviewSelectionPreview,
+  start = vi.fn().mockResolvedValue({
+    record: undefined,
+    actualChangeCount: preview.actualChangeCount,
+    truncatedAtRoot: preview.truncatedAtRoot,
+  }),
+): ReviewStartSession & {
+  selectLast: ReturnType<typeof vi.fn>;
+  start: ReturnType<typeof vi.fn>;
+} {
+  return {
+    operationId: preview.operationId,
+    listHistory: vi.fn(),
+    selectLast: vi.fn().mockResolvedValue(preview),
+    selectRange: vi.fn().mockResolvedValue(preview),
+    selectRevset: vi.fn().mockResolvedValue(preview),
+    start,
   };
 }
 

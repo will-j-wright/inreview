@@ -13,6 +13,7 @@ import type {
   JjFile,
   JjFileProbe,
   JjOperation,
+  ReviewHistoryPage,
   ReviewSelection,
 } from "../../src/jj/types";
 import {
@@ -64,6 +65,23 @@ class FakeSession implements ReviewReadSession {
       requestedCount: count,
       truncatedAtRoot: this.version.selection.actualCount < count,
     });
+  }
+
+  public listHistory(count: number): Promise<ReviewHistoryPage> {
+    return Promise.resolve({
+      commits: this.version.selection.commits.slice(-count),
+      requestedCount: count,
+      hasMore: this.version.selection.commits.length > count,
+      reachedRoot: this.version.selection.truncatedAtRoot,
+    });
+  }
+
+  public selectRange(): Promise<ReviewSelection> {
+    return Promise.resolve(this.version.selection);
+  }
+
+  public selectRevset(): Promise<ReviewSelection> {
+    return Promise.resolve(this.version.selection);
   }
 
   public resolveSelection(
@@ -151,6 +169,7 @@ class FakeRepository implements ReviewRepository {
   public readonly repository = canonicalRepositoryRoot;
   public maxConcurrentOpens = 0;
   public openCount = 0;
+  public currentOperationId: string | undefined;
   #activeOpens = 0;
   #next = 0;
 
@@ -158,6 +177,18 @@ class FakeRepository implements ReviewRepository {
     private readonly versions: readonly Version[],
     private readonly openDelayMs = 0,
   ) {}
+
+  public getCurrentOperationId(): Promise<string> {
+    if (this.currentOperationId !== undefined) {
+      return Promise.resolve(this.currentOperationId);
+    }
+    const version =
+      this.versions[Math.max(0, Math.min(this.#next - 1, this.versions.length - 1))];
+    if (version === undefined) {
+      return Promise.reject(new Error("The fake repository has no version."));
+    }
+    return Promise.resolve(version.operation.id);
+  }
 
   public async openReadSession(): Promise<ReviewReadSession> {
     this.#activeOpens += 1;
@@ -290,6 +321,53 @@ describe("review lifecycle", () => {
       );
       expect((await harness.service.getReview(first.record.review.id)).review.state).toBe(
         "archived",
+      );
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("starts a historical range with stable IDs and selection metadata", async () => {
+    const selected = version(
+      ["change-a", "change-b"],
+      ["commit-a", "commit-b"],
+      "Historical head",
+    );
+    const harness = await createHarness([selected]);
+    try {
+      const session = await harness.service.beginStartReview();
+      const preview = await session.selectRange("change-a", "change-b");
+      const started = await session.start(preview);
+
+      expect(started.record.review.selectionMode).toBe("range");
+      expect(started.record.review.requestedChangeCount).toBe(2);
+      expect(started.record.review.orderedChangeIds).toEqual([
+        "change-a",
+        "change-b",
+      ]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("rejects previews from another session or a changed repository operation", async () => {
+    const selected = version(["change-a"], ["commit-a"], "Selected");
+    const harness = await createHarness([selected, selected]);
+    try {
+      const firstSession = await harness.service.beginStartReview();
+      const secondSession = await harness.service.beginStartReview();
+      const preview = await firstSession.selectLast(1);
+
+      await expect(secondSession.start(preview)).rejects.toMatchObject({
+        code: "stale-review",
+      });
+
+      harness.repository.currentOperationId = "f".repeat(128);
+      await expect(firstSession.start(preview)).rejects.toThrow(
+        "repository changed",
+      );
+      await expect(harness.service.getActiveReview()).rejects.toBeInstanceOf(
+        NoActiveReviewError,
       );
     } finally {
       await harness.close();

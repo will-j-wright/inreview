@@ -84,6 +84,35 @@ export function buildRefreshSelection(
   );
 }
 
+export function buildRangeSelection(
+  operationId: string,
+  records: readonly JjCommit[],
+): ReviewSelection {
+  validateCommits(records, false);
+  return makeSelection(
+    operationId,
+    records.length,
+    records,
+    false,
+  );
+}
+
+export function buildRevsetSelection(
+  operationId: string,
+  records: readonly JjCommit[],
+  resultLimit: number,
+): ReviewSelection {
+  if (!Number.isSafeInteger(resultLimit) || resultLimit < 1) {
+    throw new JjSelectionError("The revset result limit must be positive.");
+  }
+  if (records.length > resultLimit) {
+    throw new JjSelectionError(
+      `The revset selects more than ${String(resultLimit)} changes.`,
+    );
+  }
+  return buildRangeSelection(operationId, records);
+}
+
 function validateCommits(
   commits: readonly JjCommit[],
   refreshing: boolean,
