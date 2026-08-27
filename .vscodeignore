@@ -9,6 +9,7 @@
 .verification/**
 **/.verification/**
 AGENTS.md
+plan-*.md
 src/**
 bridge/**
 test/**

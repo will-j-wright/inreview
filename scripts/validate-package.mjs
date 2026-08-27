@@ -113,6 +113,7 @@ for (const excluded of [
   "**/*.lock",
   "**/*.vsix",
   "AGENTS.md",
+  "plan-*.md",
   "bridge/**",
   "vitest.config.mjs",
   "package-lock.json",

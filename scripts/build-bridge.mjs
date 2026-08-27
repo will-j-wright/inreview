@@ -33,9 +33,20 @@ await new Promise((resolve, reject) => {
 });
 
 const profile = release ? "release" : "debug";
+const cargoTargetDirectory = path.resolve(
+  process.env.CARGO_TARGET_DIR ?? path.join("bridge", "target"),
+);
+const configuredTarget = process.env.CARGO_BUILD_TARGET?.trim();
+const targetDirectory =
+  configuredTarget === undefined || configuredTarget.length === 0
+    ? cargoTargetDirectory
+    : path.join(
+        cargoTargetDirectory,
+        path.basename(configuredTarget, path.extname(configuredTarget)),
+      );
 const outputDirectory = path.join("dist", "bridge");
 await mkdir(outputDirectory, { recursive: true });
 await copyFile(
-  path.join("bridge", "target", profile, executable),
+  path.join(targetDirectory, profile, executable),
   path.join(outputDirectory, executable),
 );

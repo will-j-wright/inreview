@@ -17,9 +17,8 @@ import { makeReviewRecord } from "../unit/storageFixtures";
 
 const workRoot = path.resolve(".test-work", "native-bridge");
 const executable = path.resolve(
+  "dist",
   "bridge",
-  "target",
-  "debug",
   process.platform === "win32" ? "inreview-bridge.exe" : "inreview-bridge",
 );
 const cleanups: (() => Promise<void>)[] = [];
