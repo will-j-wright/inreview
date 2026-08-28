@@ -416,6 +416,13 @@ function commentThreadOutput(thread: CommentThread) {
       fileStatus: thread.anchor.fileStatus,
       targetLine: thread.anchor.targetText,
       storedHunk: thread.anchor.storedHunk,
+      fullFileContext:
+        thread.anchor.fullFileContext == null
+          ? null
+          : {
+              targetIndex: thread.anchor.fullFileContext.targetIndex,
+              lines: [...thread.anchor.fullFileContext.lines],
+            },
     },
     currentLocation:
       thread.projection === null

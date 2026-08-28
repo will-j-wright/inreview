@@ -77,11 +77,14 @@ describe("comment service anchors", () => {
     }
   });
 
-  it("accepts only new-side additions and displayed context", async () => {
+  it("accepts new-side text lines and rejects invalid sides and file kinds", async () => {
     const deleted = makeFile("deleted", "deleted", "text");
     const binary = makeFile("binary", "modified", "binary");
     const harness = await createHarness({
       files: [lineFile("line-file"), deleted, binary],
+      modifiedContents: new Map([
+        ["line-file", "same\nnew\nunchanged\n"],
+      ]),
     });
     try {
       const base = {
@@ -101,6 +104,11 @@ describe("comment service anchors", () => {
       ).resolves.toMatchObject({ anchor: { targetText: "new" } });
       await expect(
         harness.service.createThread({ ...base, target: { kind: "line", line: 3 } }),
+      ).resolves.toMatchObject({
+        anchor: { targetText: "unchanged", storedHunk: null },
+      });
+      await expect(
+        harness.service.createThread({ ...base, target: { kind: "line", line: 99 } }),
       ).rejects.toBeInstanceOf(InvalidCommentAnchorError);
       await expect(
         harness.service.createThread({
@@ -131,6 +139,57 @@ describe("comment service anchors", () => {
           target: { kind: "line", line: 1 },
         }),
       ).rejects.toBeInstanceOf(InvalidCommentAnchorError);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("creates and exactly projects a line anchor outside displayed hunks", async () => {
+    const file = lineFile("line-file");
+    const originalContent = "same\nnew\nbefore\noutside\nafter\n";
+    const harness = await createHarness({
+      files: [file],
+      modifiedContents: new Map([[file.fileId, originalContent]]),
+    });
+    try {
+      const thread = await harness.service.createThread({
+        reviewId: harness.record.review.id,
+        snapshotId: harness.record.review.currentSnapshotId,
+        view: { mode: "combined" },
+        fileId: file.fileId,
+        target: { kind: "line", line: 4 },
+        body: "Review this unchanged line.",
+        displayName: "Reviewer",
+      });
+      expect(thread.anchor).toMatchObject({
+        targetText: "outside",
+        storedHunk: null,
+        fullFileContext: {
+          targetIndex: 3,
+          lines: ["same", "new", "before", "outside", "after", ""],
+        },
+      });
+
+      const shiftedContent = "prefix\nsame\nnew\nbefore\noutside\nafter\n";
+      const shiftedReference = await harness.store.blobs.put(
+        Buffer.from(shiftedContent),
+      );
+      const latest = await harness.store.getReview(harness.record.review.id);
+      const shiftedFile = {
+        ...lineFile("shifted"),
+        currentPath: "file.txt",
+        modifiedContent: shiftedReference,
+      };
+      const projected = await projectCommentThreads({
+        previous: latest,
+        nextSnapshot: nextSnapshot(latest, [shiftedFile]),
+        defaultFileProjections: [],
+        readBlob: async (reference) => harness.store.blobs.get(reference),
+      });
+      expect(projected[0]).toMatchObject({
+        currentness: "current",
+        projection: { target: { kind: "line", line: 5 } },
+      });
     } finally {
       await harness.close();
     }
@@ -560,10 +619,11 @@ describe("comment queries and projection", () => {
           ],
         },
       ]);
-      const projected = projectCommentThreads({
+      const projected = await projectCommentThreads({
         previous: latest,
         nextSnapshot: renamed,
         defaultFileProjections: [],
+        readBlob: () => Promise.resolve(Buffer.alloc(0)),
       });
       expect(projected[0]).toMatchObject({
         currentness: "current",
@@ -579,11 +639,12 @@ describe("comment queries and projection", () => {
         { ...lineFile("b"), currentPath: "other.txt" },
       ]);
       expect(
-        projectCommentThreads({
+        (await projectCommentThreads({
           previous: latest,
           nextSnapshot: ambiguous,
           defaultFileProjections: [],
-        })[0],
+          readBlob: () => Promise.resolve(Buffer.alloc(0)),
+        }))[0],
       ).toMatchObject({ currentness: "outdated", projection: null });
 
       const changedContextFile = lineFile("changed-context");
@@ -605,11 +666,12 @@ describe("comment queries and projection", () => {
         },
       ]);
       expect(
-        projectCommentThreads({
+        (await projectCommentThreads({
           previous: latest,
           nextSnapshot: changedContext,
           defaultFileProjections: [],
-        })[0],
+          readBlob: () => Promise.resolve(Buffer.alloc(0)),
+        }))[0],
       ).toMatchObject({ currentness: "outdated", projection: null });
 
       const crossed = nextSnapshot(latest, [], [
@@ -619,11 +681,12 @@ describe("comment queries and projection", () => {
         },
       ]);
       expect(
-        projectCommentThreads({
+        (await projectCommentThreads({
           previous: latest,
           nextSnapshot: crossed,
           defaultFileProjections: [],
-        })[0],
+          readBlob: () => Promise.resolve(Buffer.alloc(0)),
+        }))[0],
       ).toMatchObject({ currentness: "outdated", projection: null });
     } finally {
       await harness.close();
@@ -642,6 +705,7 @@ async function createHarness(
   options: {
     readonly faultInjector?: StorageFaultInjector;
     readonly files?: readonly FileManifestEntry[];
+    readonly modifiedContents?: ReadonlyMap<string, string>;
   } = {},
 ): Promise<Harness> {
   const storageRoot = path.join(workRoot, randomUUID());
@@ -656,8 +720,21 @@ async function createHarness(
       : { faultInjector: options.faultInjector }),
   });
   const empty = emptyRecord(makeReviewRecord(store.fingerprint));
-  const record =
-    options.files === undefined ? empty : withFiles(empty, options.files);
+  const files =
+    options.files === undefined
+      ? undefined
+      : await Promise.all(
+          options.files.map(async (file) => {
+            const content = options.modifiedContents?.get(file.fileId);
+            return content === undefined
+              ? file
+              : {
+                  ...file,
+                  modifiedContent: await store.blobs.put(Buffer.from(content)),
+                };
+          }),
+        );
+  const record = files === undefined ? empty : withFiles(empty, files);
   await store.putReview(record);
   let tick = 0;
   const service = new CommentService({

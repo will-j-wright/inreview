@@ -273,6 +273,13 @@ const commentLocationSchema = z
     fileStatus: fileStatusSchema,
     targetLine: z.string().nullable(),
     storedHunk: patchHunkSchema.nullable(),
+    fullFileContext: z
+      .object({
+        targetIndex: z.number().int().nonnegative(),
+        lines: z.array(z.string()).min(1).max(11),
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 

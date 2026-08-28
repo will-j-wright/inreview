@@ -13,13 +13,16 @@ import type {
   ViewIdentity,
 } from "../domain/review";
 import { viewIdentityKey } from "../domain/review";
+import { decodeTextForDisplay } from "../diff/fileKinds";
 import type { CommentProjectionContext } from "./types";
 
-export function projectCommentThreads(
+export async function projectCommentThreads(
   context: CommentProjectionContext,
-): readonly CommentThread[] {
-  return context.previous.threads.map((thread) =>
-    projectThread(thread, context.nextSnapshot),
+): Promise<readonly CommentThread[]> {
+  return Promise.all(
+    context.previous.threads.map((thread) =>
+      projectThread(thread, context.nextSnapshot, context.readBlob),
+    ),
   );
 }
 
@@ -36,6 +39,21 @@ export function lineContextFingerprint(
       noNewlineAtEnd: noNewlineAtEnd === true,
     })),
   });
+}
+
+export function splitTextDocumentLines(content: string): readonly string[] {
+  return content.split(/\r\n|\n|\r/u);
+}
+
+export function fileTextFingerprint(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+export function fullFileContextFingerprint(
+  targetIndex: number,
+  lines: readonly string[],
+): string {
+  return hash({ version: 1, targetIndex, lines });
 }
 
 export function fileContextFingerprint(
@@ -56,11 +74,12 @@ export function fileContextFingerprint(
   });
 }
 
-function projectThread(
+async function projectThread(
   thread: CommentThread,
   snapshot: Snapshot,
-): CommentThread {
-  const projection = findProjection(thread, snapshot);
+  readBlob: CommentProjectionContext["readBlob"],
+): Promise<CommentThread> {
+  const projection = await findProjection(thread, snapshot, readBlob);
   return {
     ...thread,
     projection,
@@ -69,10 +88,11 @@ function projectThread(
   };
 }
 
-function findProjection(
+async function findProjection(
   thread: CommentThread,
   snapshot: Snapshot,
-): CommentProjection | null {
+  readBlob: CommentProjectionContext["readBlob"],
+): Promise<CommentProjection | null> {
   const view = snapshot.views.find(
     ({ identity }) =>
       viewIdentityKey(identity) === viewIdentityKey(thread.anchor.view),
@@ -104,7 +124,10 @@ function findProjection(
     };
   }
 
-  const line = findExactLine(thread.anchor, file);
+  const line =
+    thread.anchor.fullFileContext == null
+      ? findExactHunkLine(thread.anchor, file)
+      : await findExactFullFileLine(thread.anchor, file, readBlob);
   if (line === null) {
     return null;
   }
@@ -116,7 +139,7 @@ function findProjection(
   };
 }
 
-function findExactLine(
+function findExactHunkLine(
   anchor: CommentAnchor,
   file: FileManifestEntry,
 ): number | null {
@@ -129,6 +152,7 @@ function findExactLine(
   ) {
     return null;
   }
+
   const targetLine = anchor.target.line;
   const storedHunk = anchor.storedHunk;
   const targetIndexes = storedHunk.lines
@@ -165,6 +189,53 @@ function findExactLine(
   });
   const [onlyMatch] = matches;
   return matches.length === 1 && onlyMatch !== undefined ? onlyMatch : null;
+}
+
+async function findExactFullFileLine(
+  anchor: CommentAnchor,
+  file: FileManifestEntry,
+  readBlob: CommentProjectionContext["readBlob"],
+): Promise<number | null> {
+  const context = anchor.fullFileContext;
+  if (
+    context == null ||
+    anchor.storedHunk !== null ||
+    anchor.target.kind !== "line" ||
+    anchor.targetText === null ||
+    file.kind !== "text" ||
+    file.currentPath === null ||
+    file.modifiedContent === null
+  ) {
+    return null;
+  }
+  const content = decodeTextForDisplay(await readBlob(file.modifiedContent));
+  const fingerprint = fileTextFingerprint(content);
+  const lines = splitTextDocumentLines(content);
+  if (
+    fullFileContextFingerprint(context.targetIndex, context.lines) !==
+      anchor.contextFingerprint ||
+    context.lines[context.targetIndex] !== anchor.targetText
+  ) {
+    return null;
+  }
+  if (
+    fingerprint === context.fileFingerprint &&
+    lines[anchor.target.line - 1] === anchor.targetText
+  ) {
+    return anchor.target.line;
+  }
+  const matches: number[] = [];
+  const lastStart = lines.length - context.lines.length;
+  for (let start = 0; start <= lastStart; start += 1) {
+    if (
+      context.lines.every(
+        (line, index) => line === lines[start + index],
+      )
+    ) {
+      matches.push(start + context.targetIndex + 1);
+    }
+  }
+  return matches.length === 1 ? (matches[0] ?? null) : null;
 }
 
 function sameHunkContent(left: PatchHunk, right: PatchHunk): boolean {

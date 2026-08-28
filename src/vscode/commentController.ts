@@ -156,7 +156,7 @@ export class InReviewCommentController implements vscode.Disposable {
         } catch {
           return [];
         }
-        return commentableRanges(record, identity)
+        return commentableRanges(record, identity, document.lineCount)
           .filter(({ end }) => end <= document.lineCount)
           .map(
             ({ start, end }) =>
@@ -839,15 +839,13 @@ export function resolveCommentDocument(
 export function commentableRanges(
   record: ReviewRecord,
   identity: VirtualDocumentIdentity,
+  lineCount: number,
 ): readonly LineRange[] {
   const target = resolveCommentDocument(record, identity);
-  if (target === undefined) {
+  if (target === undefined || lineCount < 1) {
     return [];
   }
-  return (
-    target.file.commentableRanges ??
-    rangesFromHunks(target.file)
-  ).filter(({ start, end }) => start > 0 && end >= start);
+  return [{ start: 1, end: lineCount }];
 }
 
 export function commentPlacements(
@@ -905,29 +903,6 @@ export function commentPlacements(
   });
 }
 
-function rangesFromHunks(file: FileManifestEntry): readonly LineRange[] {
-  const lines = new Set<number>();
-  for (const hunk of file.hunks) {
-    for (const line of hunk.lines) {
-      if (
-        (line.kind === "addition" || line.kind === "context") &&
-        line.newLine !== null
-      ) {
-        lines.add(line.newLine);
-      }
-    }
-  }
-  const ranges: { start: number; end: number }[] = [];
-  for (const line of [...lines].sort((left, right) => left - right)) {
-    const previous = ranges.at(-1);
-    if (previous !== undefined && previous.end + 1 === line) {
-      previous.end = line;
-    } else {
-      ranges.push({ start: line, end: line });
-    }
-  }
-  return ranges;
-}
 
 function matchesThreadFile(
   thread: PersistedCommentThread,

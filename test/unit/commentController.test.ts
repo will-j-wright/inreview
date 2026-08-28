@@ -30,10 +30,10 @@ describe("comment document mapping", () => {
     const identity = identityFor(record);
 
     expect(resolveCommentDocument(record, identity)?.file.fileId).toBe("file-a");
-    expect(commentableRanges(record, identity)).toEqual([
-      { start: 1, end: 2 },
+    expect(commentableRanges(record, identity, 20)).toEqual([
+      { start: 1, end: 20 },
     ]);
-    expect(commentableRanges(record, { ...identity, side: "original" })).toEqual(
+    expect(commentableRanges(record, { ...identity, side: "original" }, 20)).toEqual(
       [],
     );
     expect(
@@ -47,13 +47,14 @@ describe("comment document mapping", () => {
           },
         },
         identity,
+        20,
       ),
     ).toEqual([]);
     expect(
       commentableRanges(record, {
         ...identity,
         repositoryPath: "other.txt",
-      }),
+      }, 20),
     ).toEqual([]);
   });
 

@@ -165,6 +165,7 @@ export class RefreshService {
           prepared.snapshot,
           capturedAt,
         );
+        const blobReads = new Map<string, Promise<Buffer>>();
         const threads =
           this.#projectComments === undefined
             ? projected
@@ -172,6 +173,15 @@ export class RefreshService {
                 previous: structuredClone(latest),
                 nextSnapshot: prepared.snapshot,
                 defaultFileProjections: structuredClone(projected),
+                readBlob: (reference) => {
+                  const existing = blobReads.get(reference.sha256);
+                  if (existing !== undefined) {
+                    return existing;
+                  }
+                  const read = this.#store.blobs.get(reference);
+                  blobReads.set(reference.sha256, read);
+                  return read;
+                },
               });
         validateProjectionBoundary(latest, threads);
         return [
