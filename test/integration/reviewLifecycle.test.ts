@@ -104,4 +104,30 @@ describe.skipIf(!jjAvailable())("review lifecycle integration", () => {
       await service.close();
     }
   });
+
+  it("adds a new descendant change to the active review", async () => {
+    const service = await ReviewService.create({
+      repositoryPath: nestedPath,
+      environment: "integration-extend-test",
+      storageRoot,
+      clock: () => new Date("2026-08-25T20:00:00.000Z"),
+    });
+    try {
+      const started = await service.startReview({ requestedChangeCount: 1 });
+      runJj(["new", "--message", "Agent feedback fix"]);
+      await fs.writeFile(path.join(repositoryRoot, "review.txt"), "fixed\n");
+
+      const extended = await service.includeNewChanges();
+
+      expect(extended.addedChangeCount).toBe(1);
+      expect(extended.record.review.orderedChangeIds).toHaveLength(
+        started.record.review.orderedChangeIds.length + 1,
+      );
+      expect(extended.record.snapshots.at(-1)?.changes.at(-1)?.subject).toBe(
+        "Agent feedback fix",
+      );
+    } finally {
+      await service.close();
+    }
+  });
 });

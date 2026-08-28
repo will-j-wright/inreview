@@ -81,6 +81,8 @@ was closed as a duplicate.
 7. Select a file under **Active Review** to open its native diff.
 8. Use the comment gutter on an added or unchanged new-side line, or use **Add File Comment**.
 9. After a selected change is rewritten, run **InReview: Refresh Review**.
+10. After adding direct descendant changes to the stack, run
+    **InReview: Include New Changes**.
 
 InReview stores immutable snapshots. A thread remains inline only when its complete target and context map exactly and uniquely to the refreshed diff. Otherwise, it becomes **Outdated** and stays available from the Comments view.
 
@@ -90,6 +92,12 @@ request can contain fewer than `X` changes. InReview rejects merges,
 divergent changes, and unresolved conflicts in the selected stack. Refresh
 follows the original stable change IDs after rewrites; it does not add a new
 child that later becomes `@`.
+
+**Include New Changes** explicitly appends the contiguous direct descendant
+chain from the current review head through `@`. It rejects unrelated working
+copies, gaps, merges, divergence, conflicts, and reviews that already include
+`@`. Existing comments project to the new immutable snapshot with the same
+exact matching rules as refresh.
 
 **Choose Range** browses up to 200 ancestors of `@` in pages of 50. The newest
 and oldest selected changes are both included. InReview rejects a range that
@@ -163,6 +171,7 @@ Use the Command Palette or the matching view and comment actions.
 | --- | --- |
 | **InReview: Start Review** | Select and capture a range, revset, or latest change stack. |
 | **InReview: Refresh Review** | Capture rewritten versions of the same stable change IDs. |
+| **InReview: Include New Changes** | Append direct descendant changes through `@` to the active review. |
 | **InReview: Archive Review** | Make the active review read-only and move it to history. |
 | **InReview: Restore Archived Review** | Restore an archived review as the active review. |
 | **InReview: Rename Review** | Change the active review title. |

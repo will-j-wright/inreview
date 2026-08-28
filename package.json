@@ -31,6 +31,7 @@
     "onView:inreview.history",
     "onCommand:inreview.startReview",
     "onCommand:inreview.refreshReview",
+    "onCommand:inreview.includeNewChanges",
     "onCommand:inreview.archiveReview",
     "onCommand:inreview.restoreArchivedReview",
     "onCommand:inreview.renameReview",
@@ -104,6 +105,13 @@
         "title": "Refresh Review",
         "category": "InReview",
         "icon": "$(refresh)",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "inreview.includeNewChanges",
+        "title": "Include New Changes",
+        "category": "InReview",
+        "icon": "$(git-commit)",
         "enablement": "isWorkspaceTrusted"
       },
       {
@@ -230,19 +238,24 @@
           "group": "navigation@2"
         },
         {
-          "command": "inreview.archiveReview",
+          "command": "inreview.includeNewChanges",
           "when": "view == inreview.activeReview && isWorkspaceTrusted",
           "group": "navigation@3"
         },
         {
-          "command": "inreview.showCombinedDiff",
+          "command": "inreview.archiveReview",
           "when": "view == inreview.activeReview && isWorkspaceTrusted",
           "group": "navigation@4"
         },
         {
-          "command": "inreview.showPerChangeDiffs",
+          "command": "inreview.showCombinedDiff",
           "when": "view == inreview.activeReview && isWorkspaceTrusted",
           "group": "navigation@5"
+        },
+        {
+          "command": "inreview.showPerChangeDiffs",
+          "when": "view == inreview.activeReview && isWorkspaceTrusted",
+          "group": "navigation@6"
         }
       ],
       "view/item/context": [

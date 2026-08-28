@@ -7,6 +7,7 @@ import {
   prepareSnapshot,
   shouldWarnForChangedLines,
 } from "../jj/snapshotBuilder";
+import type { ReviewSelection } from "../jj/types";
 import type { ReviewStore } from "../storage/reviewStore";
 import {
   ArchivedReviewReadOnlyError,
@@ -18,6 +19,7 @@ import type {
   CommentProjectionHook,
   ReviewCapture,
   ReviewMutationOptions,
+  ReviewReadSession,
   ReviewRepository,
 } from "./types";
 import { runRepositoryMutation } from "./mutationQueue";
@@ -30,6 +32,11 @@ export interface RefreshReviewOptions extends ReviewMutationOptions {
 export interface RefreshReviewResult {
   readonly record: ReviewRecord;
   readonly changed: boolean;
+}
+
+export interface IncludeNewChangesResult {
+  readonly record: ReviewRecord;
+  readonly addedChangeCount: number;
 }
 
 export interface RefreshServiceOptions {
@@ -91,9 +98,57 @@ export class RefreshService {
     );
   }
 
+  public async includeNewChanges(
+    options: RefreshReviewOptions = {},
+  ): Promise<IncludeNewChangesResult> {
+    return runRepositoryMutation(this.#store.fingerprint, async () => {
+      const previous = await this.requireMutableActive(options);
+      const session = await this.#repository.openReadSession(options.signal);
+      const selection = await session.extendSelection(
+        previous.review.orderedChangeIds,
+        options.signal,
+      );
+      const record = await this.captureAndCommit(
+        previous,
+        selection,
+        session,
+        options,
+        true,
+      );
+      return {
+        record,
+        addedChangeCount:
+          record.review.orderedChangeIds.length -
+          previous.review.orderedChangeIds.length,
+      };
+    });
+  }
+
   private async refreshActiveUnlocked(
     options: RefreshReviewOptions,
   ): Promise<RefreshReviewResult> {
+    const previous = await this.requireMutableActive(options);
+    const session = await this.#repository.openReadSession(options.signal);
+    const selection = await session.resolveSelection(
+      previous.review.orderedChangeIds,
+      options.signal,
+    );
+    const record = await this.captureAndCommit(
+      previous,
+      selection,
+      session,
+      options,
+      false,
+    );
+    if (record === previous) {
+      return { record: previous, changed: false };
+    }
+    return { record, changed: true };
+  }
+
+  private async requireMutableActive(
+    options: ReviewMutationOptions,
+  ): Promise<ReviewRecord> {
     const previous = await this.#store.getActiveReview();
     if (previous === undefined) {
       throw new NoActiveReviewError();
@@ -106,15 +161,19 @@ export class RefreshService {
       previous.review.currentSnapshotId !== options.expectedCurrentSnapshotId
     ) {
       throw new StaleReviewError(
-        "The active review changed before the refresh started.",
+        "The active review changed before the operation started.",
       );
     }
+    return previous;
+  }
 
-    const session = await this.#repository.openReadSession(options.signal);
-    const selection = await session.resolveSelection(
-      previous.review.orderedChangeIds,
-      options.signal,
-    );
+  private async captureAndCommit(
+    previous: ReviewRecord,
+    selection: ReviewSelection,
+    session: ReviewReadSession,
+    options: RefreshReviewOptions,
+    extendSelection: boolean,
+  ): Promise<ReviewRecord> {
     const preflight = await this.#capture.preflight(
       selection,
       session,
@@ -143,7 +202,7 @@ export class RefreshService {
       throw new StaleReviewError("The active review has no current snapshot.");
     }
     if (snapshotCaptureEqual(current, prepared.snapshot)) {
-      return { record: previous, changed: false };
+      return previous;
     }
 
     const [updated] = await this.#store.commitPreparedReviews(
@@ -189,6 +248,11 @@ export class RefreshService {
             review: {
               ...latest.review,
               updatedAt: capturedAt,
+              ...(extendSelection
+                ? {
+                    orderedChangeIds: [...selection.changeIds],
+                  }
+                : {}),
               currentSnapshotId: prepared.snapshot.id,
               snapshotIds: [
                 ...latest.review.snapshotIds,
@@ -205,7 +269,7 @@ export class RefreshService {
     if (updated === undefined) {
       throw new StaleReviewError("The refresh did not commit a review record.");
     }
-    return { record: updated, changed: true };
+    return updated;
   }
 }
 

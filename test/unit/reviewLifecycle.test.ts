@@ -94,6 +94,23 @@ class FakeSession implements ReviewReadSession {
     return Promise.resolve(this.version.selection);
   }
 
+  public extendSelection(
+    storedChangeIds: readonly string[],
+  ): Promise<ReviewSelection> {
+    if (
+      storedChangeIds.some(
+        (changeId, index) => this.version.selection.changeIds[index] !== changeId,
+      )
+    ) {
+      return Promise.reject(
+        new JjStaleSelectionError(
+          "The selected changes are not an ancestor prefix.",
+        ),
+      );
+    }
+    return Promise.resolve(this.version.selection);
+  }
+
   public diffGit(): Promise<Buffer> {
     return Promise.resolve(Buffer.from(this.version.patch));
   }
@@ -427,6 +444,88 @@ describe("review lifecycle", () => {
         changed.record.snapshots.at(-1)?.changes[0]?.commitId,
       ).toBe("commit-b");
       expect(events).toEqual(["started", "refreshed"]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("includes new direct descendants and updates the active selection atomically", async () => {
+    const initial = version(["change-a"], ["commit-a"], "Initial");
+    const extended = version(
+      ["change-a", "change-b"],
+      ["commit-a", "commit-b"],
+      "Feedback fix",
+      { newText: "fixed" },
+    );
+    const harness = await createHarness([initial, extended]);
+    const events: string[] = [];
+    harness.service.subscribe(({ type }) => events.push(type));
+    try {
+      const started = await harness.service.startReview({
+        requestedChangeCount: 1,
+      });
+      const withComment = addFileComment(
+        started.record,
+        "00000000-0000-4000-8000-000000000099",
+      );
+      await harness.store.putReview(withComment);
+      const result = await harness.service.includeNewChanges();
+
+      expect(result.addedChangeCount).toBe(1);
+      expect(result.record.review.orderedChangeIds).toEqual([
+        "change-a",
+        "change-b",
+      ]);
+      expect(result.record.review.requestedChangeCount).toBe(1);
+      expect(result.record.review.snapshotIds).toHaveLength(2);
+      expect(result.record.review.currentSnapshotId).not.toBe(
+        started.record.review.currentSnapshotId,
+      );
+      expect(result.record.snapshots.at(-1)?.orderedChangeIds).toEqual([
+        "change-a",
+        "change-b",
+      ]);
+      expect(result.record.review.counts).toEqual({
+        open: 1,
+        outdated: 0,
+        resolved: 0,
+      });
+      expect(result.record.threads[0]?.anchor).toEqual(
+        withComment.threads[0]?.anchor,
+      );
+      expect(result.record.threads[0]?.messages).toEqual(
+        withComment.threads[0]?.messages,
+      );
+      expect(result.record.threads[0]).toMatchObject({
+        currentness: "current",
+        projection: {
+          snapshotId: result.record.review.currentSnapshotId,
+          path: "file.txt",
+        },
+      });
+      expect(events).toEqual(["started", "extended"]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("does not mutate or emit when including new changes is rejected", async () => {
+    const initial = version(["change-a"], ["commit-a"], "Initial");
+    const rejected = version(["other-change"], ["other-commit"], "Unrelated");
+    const harness = await createHarness([initial, rejected]);
+    const events: string[] = [];
+    harness.service.subscribe(({ type }) => events.push(type));
+    try {
+      const started = await harness.service.startReview({
+        requestedChangeCount: 1,
+      });
+      await expect(harness.service.includeNewChanges()).rejects.toMatchObject({
+        code: "stale-selection",
+      });
+      const active = await harness.service.getActiveReview();
+
+      expect(active).toEqual(started.record);
+      expect(events).toEqual(["started"]);
     } finally {
       await harness.close();
     }

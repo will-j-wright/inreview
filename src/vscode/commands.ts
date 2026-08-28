@@ -1,8 +1,9 @@
 import type { ReviewRecord } from "../domain/comments";
-import { JjSelectionError } from "../jj/errors";
+import { JjNoNewChangesError, JjSelectionError } from "../jj/errors";
 import { LargeDiffConfirmationRequiredError } from "../review/errors";
 import type {
   RefreshReviewResult,
+  IncludeNewChangesResult,
   ReviewSelectionCandidate,
   ReviewSelectionPreview,
   ReviewService,
@@ -198,6 +199,36 @@ export class ReviewCommandController {
       }
     } catch (error) {
       await this.reportError("Could not refresh the review", error);
+    }
+  }
+
+  public async includeNewChanges(): Promise<void> {
+    const service = this.requireService();
+    if (service === undefined) {
+      return;
+    }
+    try {
+      let result: IncludeNewChangesResult;
+      try {
+        result = await service.includeNewChanges();
+      } catch (error) {
+        if (!(error instanceof LargeDiffConfirmationRequiredError)) {
+          throw error;
+        }
+        if (!(await this.confirmLargeDiff(error.changedLineCount))) {
+          return;
+        }
+        result = await service.includeNewChanges({ confirmLargeDiff: true });
+      }
+      await this.options.ui.showInformationMessage(
+        `Included ${String(result.addedChangeCount)} new ${result.addedChangeCount === 1 ? "change" : "changes"} in the active review.`,
+      );
+    } catch (error) {
+      if (error instanceof JjNoNewChangesError) {
+        await this.options.ui.showInformationMessage(error.message);
+        return;
+      }
+      await this.reportError("Could not include new changes", error);
     }
   }
 
@@ -687,6 +718,7 @@ export type ReviewCommandService = Pick<
   | "startReview"
   | "archiveAndStartReview"
   | "refreshReview"
+  | "includeNewChanges"
   | "archiveActiveReview"
   | "restoreReview"
   | "archiveActiveAndRestoreReview"

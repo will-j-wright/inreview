@@ -6,6 +6,7 @@ export interface CommandDefinition {
 export const commandDefinitions = [
   { id: "inreview.startReview", title: "Start Review" },
   { id: "inreview.refreshReview", title: "Refresh Review" },
+  { id: "inreview.includeNewChanges", title: "Include New Changes" },
   { id: "inreview.archiveReview", title: "Archive Review" },
   { id: "inreview.restoreArchivedReview", title: "Restore Archived Review" },
   { id: "inreview.renameReview", title: "Rename Review" },

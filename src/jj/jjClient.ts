@@ -22,6 +22,7 @@ import {
 } from "./processRunner";
 import {
   buildLastSelection,
+  buildExtendedSelection,
   buildRangeSelection,
   buildRefreshSelection,
   buildRevsetSelection,
@@ -485,6 +486,22 @@ export class JjReadSession {
       storedChangeIds,
       records,
     );
+  }
+
+  public async extendSelection(
+    storedChangeIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ReviewSelection> {
+    const current = await this.resolveSelection(storedChangeIds, signal);
+    const oldestChangeId = current.changeIds[0];
+    if (oldestChangeId === undefined) {
+      throw new JjSelectionError("A review requires at least one change ID.");
+    }
+    const records = await this.readCommitRevset(
+      `change_id("${oldestChangeId}")::@`,
+      signal,
+    );
+    return buildExtendedSelection(this.operationId, current, records);
   }
 
   public async getCommit(

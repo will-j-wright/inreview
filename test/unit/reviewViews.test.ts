@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { JjNoNewChangesError } from "../../src/jj/errors";
 import { LargeDiffConfirmationRequiredError } from "../../src/review";
 import {
   ActiveReviewTree,
@@ -159,6 +160,44 @@ describe("review command flows", () => {
     expect(service.renameActiveReview).not.toHaveBeenCalled();
   });
 
+  it("includes new changes after large-diff confirmation", async () => {
+    const record = makeReviewRecord(fingerprint);
+    const service = fakeService(record);
+    service.includeNewChanges = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new LargeDiffConfirmationRequiredError(20_000, 10_000),
+      )
+      .mockResolvedValueOnce({ record, addedChangeCount: 2 });
+    const ui = new FakeUi(undefined, ["Continue"]);
+
+    await controllerFor(service, ui, new FakeState()).includeNewChanges();
+
+    expect(service.includeNewChanges).toHaveBeenNthCalledWith(1);
+    expect(service.includeNewChanges).toHaveBeenNthCalledWith(2, {
+      confirmLargeDiff: true,
+    });
+    expect(ui.information).toContain(
+      "Included 2 new changes in the active review.",
+    );
+  });
+
+  it("reports an already included working copy as information", async () => {
+    const record = makeReviewRecord(fingerprint);
+    const service = fakeService(record);
+    service.includeNewChanges = vi
+      .fn()
+      .mockRejectedValue(new JjNoNewChangesError());
+    const ui = new FakeUi(undefined, []);
+
+    await controllerFor(service, ui, new FakeState()).includeNewChanges();
+
+    expect(ui.information).toContain(
+      "The current working copy has no new descendant changes to include.",
+    );
+    expect(ui.errors).toEqual([]);
+  });
+
   it("selects a historical range by newest and oldest included changes", async () => {
     const record = makeReviewRecord(fingerprint);
     const service = fakeService(record);
@@ -294,6 +333,7 @@ function fakeService(
     startReview: vi.fn(),
     archiveAndStartReview: vi.fn(),
     refreshReview: vi.fn(),
+    includeNewChanges: vi.fn(),
     archiveActiveReview: vi.fn(),
     restoreReview: vi.fn(),
     archiveActiveAndRestoreReview: vi.fn(),

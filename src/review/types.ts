@@ -28,6 +28,10 @@ export interface ReviewReadSession extends SnapshotReadSession {
     storedChangeIds: readonly string[],
     signal?: AbortSignal,
   ): Promise<ReviewSelection>;
+  extendSelection(
+    storedChangeIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ReviewSelection>;
 }
 
 export interface ReviewRepository {
@@ -68,6 +72,7 @@ export type CommentProjectionHook = (
 export type ReviewChangeType =
   | "started"
   | "refreshed"
+  | "extended"
   | "archived"
   | "restored"
   | "renamed"

@@ -141,6 +141,22 @@ describe.skipIf(!jjAvailable())("jj adapter integration", () => {
     expect(refreshed.commits.at(-1)?.subject).toBe("newest");
   });
 
+  it("explicitly extends a stored selection through new descendants at @", async () => {
+    const originalSession = await new JjClient(REPOSITORY).openReadSession();
+    const original = await originalSession.selectLast(1);
+    runJj(["new", "--message", "feedback fix"]);
+
+    const extendedSession = await new JjClient(REPOSITORY).openReadSession();
+    const extended = await extendedSession.extendSelection(original.changeIds);
+
+    expect(extended.changeIds.slice(0, original.changeIds.length)).toEqual(
+      original.changeIds,
+    );
+    expect(extended.actualCount).toBe(original.actualCount + 1);
+    expect(extended.commits.at(-1)?.subject).toBe("feedback fix");
+    expect(extended.commits.at(-1)?.currentWorkingCopy).toBe(true);
+  });
+
   it("reports a missing configured executable", async () => {
     await expect(
       new JjClient(REPOSITORY, {

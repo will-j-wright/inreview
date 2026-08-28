@@ -23,6 +23,7 @@ import {
   RefreshService,
   type RefreshReviewOptions,
   type RefreshReviewResult,
+  type IncludeNewChangesResult,
 } from "./refreshService";
 import { CommentService } from "./commentService";
 import type {
@@ -411,6 +412,19 @@ export class ReviewService {
         snapshotId: result.record.review.currentSnapshotId,
       });
     }
+    return result;
+  }
+
+  public async includeNewChanges(
+    options: RefreshReviewOptions = {},
+  ): Promise<IncludeNewChangesResult> {
+    const result = await this.refreshService.includeNewChanges(options);
+    this.emit({
+      type: "extended",
+      repositoryFingerprint: this.storageKey,
+      reviewId: result.record.review.id,
+      snapshotId: result.record.review.currentSnapshotId,
+    });
     return result;
   }
 
