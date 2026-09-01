@@ -77,13 +77,18 @@ describe("comment service anchors", () => {
     }
   });
 
-  it("accepts new-side text lines and rejects invalid sides and file kinds", async () => {
+  it("accepts text lines on both diff sides and rejects invalid file kinds", async () => {
     const deleted = makeFile("deleted", "deleted", "text");
+    const added = makeFile("added", "added", "text");
     const binary = makeFile("binary", "modified", "binary");
     const harness = await createHarness({
-      files: [lineFile("line-file"), deleted, binary],
+      files: [lineFile("line-file"), deleted, added, binary],
       modifiedContents: new Map([
         ["line-file", "same\nnew\nunchanged\n"],
+      ]),
+      originalContents: new Map([
+        ["line-file", "same\nold\nunchanged\n"],
+        ["deleted", "deleted file\n"],
       ]),
     });
     try {
@@ -110,11 +115,49 @@ describe("comment service anchors", () => {
       await expect(
         harness.service.createThread({ ...base, target: { kind: "line", line: 99 } }),
       ).rejects.toBeInstanceOf(InvalidCommentAnchorError);
+      const oldSide = await harness.service.createThread({
+        ...base,
+        side: "old",
+        target: { kind: "line", line: 2 },
+      });
+      expect(oldSide).toMatchObject({
+        anchor: {
+          side: "old",
+          targetText: "old",
+          storedHunk: null,
+          fullFileContext: {
+            lines: ["same", "old", "unchanged", ""],
+          },
+        },
+        projection: { side: "old", path: "file.txt" },
+      });
+      const unchangedOriginal = await harness.store.blobs.put(
+        Buffer.from("same\nold\nunchanged\n"),
+      );
+      const projectedOldSide = await projectCommentThreads({
+        previous: { ...harness.record, threads: [oldSide] },
+        nextSnapshot: nextSnapshot(harness.record, [
+          {
+            ...lineFile("next"),
+            originalContent: unchangedOriginal,
+          },
+        ]),
+        defaultFileProjections: [],
+        readBlob: async (reference) => harness.store.blobs.get(reference),
+      });
+      expect(projectedOldSide[0]).toMatchObject({
+        currentness: "current",
+        projection: {
+          side: "old",
+          target: { kind: "line", line: 2 },
+        },
+      });
       await expect(
         harness.service.createThread({
           ...base,
+          fileId: added.fileId,
           side: "old",
-          target: { kind: "line", line: 2 },
+          target: { kind: "line", line: 1 },
         }),
       ).rejects.toBeInstanceOf(InvalidCommentAnchorError);
       await expect(
@@ -139,6 +182,69 @@ describe("comment service anchors", () => {
           target: { kind: "line", line: 1 },
         }),
       ).rejects.toBeInstanceOf(InvalidCommentAnchorError);
+      await expect(
+        harness.service.createThread({
+          ...base,
+          fileId: deleted.fileId,
+          side: "old",
+          target: { kind: "line", line: 1 },
+        }),
+      ).resolves.toMatchObject({
+        anchor: { side: "old", targetText: "deleted file" },
+      });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("creates and exactly projects an old-side line outside displayed hunks", async () => {
+    const file = lineFile("line-file");
+    const originalContent = "same\nold\nbefore\noutside\nafter\n";
+    const harness = await createHarness({
+      files: [file],
+      originalContents: new Map([[file.fileId, originalContent]]),
+    });
+    try {
+      const thread = await harness.service.createThread({
+        reviewId: harness.record.review.id,
+        snapshotId: harness.record.review.currentSnapshotId,
+        view: { mode: "combined" },
+        fileId: file.fileId,
+        target: { kind: "line", line: 4 },
+        side: "old",
+        body: "Review the original line.",
+        displayName: "Reviewer",
+      });
+      expect(thread.anchor).toMatchObject({
+        side: "old",
+        targetText: "outside",
+        storedHunk: null,
+      });
+
+      const shiftedReference = await harness.store.blobs.put(
+        Buffer.from("prefix\nsame\nold\nbefore\noutside\nafter\n"),
+      );
+      const latest = await harness.store.getReview(harness.record.review.id);
+      const shiftedFile = {
+        ...lineFile("shifted"),
+        originalPath: "file.txt",
+        currentPath: "file.txt",
+        originalContent: shiftedReference,
+      };
+      const projected = await projectCommentThreads({
+        previous: latest,
+        nextSnapshot: nextSnapshot(latest, [shiftedFile]),
+        defaultFileProjections: [],
+        readBlob: async (reference) => harness.store.blobs.get(reference),
+      });
+      expect(projected[0]).toMatchObject({
+        currentness: "current",
+        projection: {
+          side: "old",
+          path: "file.txt",
+          target: { kind: "line", line: 5 },
+        },
+      });
     } finally {
       await harness.close();
     }
@@ -706,6 +812,7 @@ async function createHarness(
     readonly faultInjector?: StorageFaultInjector;
     readonly files?: readonly FileManifestEntry[];
     readonly modifiedContents?: ReadonlyMap<string, string>;
+    readonly originalContents?: ReadonlyMap<string, string>;
   } = {},
 ): Promise<Harness> {
   const storageRoot = path.join(workRoot, randomUUID());
@@ -725,13 +832,25 @@ async function createHarness(
       ? undefined
       : await Promise.all(
           options.files.map(async (file) => {
-            const content = options.modifiedContents?.get(file.fileId);
-            return content === undefined
-              ? file
-              : {
-                  ...file,
-                  modifiedContent: await store.blobs.put(Buffer.from(content)),
-                };
+            const modified = options.modifiedContents?.get(file.fileId);
+            const original = options.originalContents?.get(file.fileId);
+            return {
+              ...file,
+              ...(modified === undefined
+                ? {}
+                : {
+                    modifiedContent: await store.blobs.put(
+                      Buffer.from(modified),
+                    ),
+                  }),
+              ...(original === undefined
+                ? {}
+                : {
+                    originalContent: await store.blobs.put(
+                      Buffer.from(original),
+                    ),
+                  }),
+            };
           }),
         );
   const record = files === undefined ? empty : withFiles(empty, files);

@@ -270,6 +270,7 @@ const commentLocationSchema = z
     originalPath: repositoryPathSchema.nullable(),
     currentPath: repositoryPathSchema.nullable(),
     line: z.number().int().positive().nullable(),
+    side: z.enum(["old", "new"]).nullable(),
     fileStatus: fileStatusSchema,
     targetLine: z.string().nullable(),
     storedHunk: patchHunkSchema.nullable(),
@@ -289,6 +290,7 @@ const currentCommentLocationSchema = z
     view: viewIdentitySchema,
     path: repositoryPathSchema,
     line: z.number().int().positive().nullable(),
+    side: z.enum(["old", "new"]).nullable(),
   })
   .strict();
 

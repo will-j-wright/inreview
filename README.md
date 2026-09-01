@@ -79,7 +79,8 @@ was closed as a duplicate.
    change. Use **Load older changes** to extend the history window.
 6. Confirm the ordered selection preview.
 7. Select a file under **Active Review** to open its native diff.
-8. Use the comment gutter on an added or unchanged new-side line, or use **Add File Comment**.
+8. Use the comment gutter on either stored side of a changed text file, or use
+   **Add File Comment**.
 9. After a selected change is rewritten, run **InReview: Refresh Review**.
 10. After adding direct descendant changes to the stack, run
     **InReview: Include New Changes**.
@@ -111,15 +112,16 @@ contiguous, single-parent chain. InReview previews the resolved changes and
 stores their full stable change IDs. It does not save or re-evaluate the
 original revset during refresh.
 
-Line comments are available on any line of the stored new-side content for a
-text file included in the diff. Expand an unchanged section in the native diff
-to comment outside a displayed hunk. Deleted lines remain visible but are not
-commentable. Deleted files can receive file comments. A refresh keeps a thread
-current only when its full target and context have one exact match. Hunk
-comments and full-file comments use separate exact anchors; InReview does not
-fall back to fuzzy matching. All other threads become **Outdated** and remain
-linked to their immutable original snapshot. User comments can be edited or
-deleted. Agent replies are immutable. Resolved threads can be reopened.
+Line comments are available on any line of the stored original or modified
+content for a text file included in the diff. This includes deleted lines and
+the original content of deleted files. Expand an unchanged section in the
+native diff to comment outside a displayed hunk. A refresh keeps a thread
+current only when its side, full target, and context have one exact match.
+Hunk comments and full-file comments use separate exact anchors; InReview does
+not fall back to fuzzy matching. All other threads become **Outdated** and
+remain linked to their immutable original snapshot. User comments can be
+edited or deleted. Agent replies are immutable. Resolved threads can be
+reopened.
 
 ## Connect GitHub Copilot CLI
 
@@ -214,7 +216,7 @@ requests. MCP traffic stays on a local per-user socket or named pipe.
 - One jj repository per VS Code window.
 - Reviews must contain one contiguous, single-parent change stack.
 - Merge changes and unresolved conflicts are rejected.
-- No comments on deleted lines or unchanged files outside the selected diff.
+- No comments on unchanged files outside the selected diff.
 - Native per-file diffs rather than VS Code's proposed multi-file diff API.
 - No bridge forwarding between local and remote extension hosts.
 - No cloud synchronization or shared review server.

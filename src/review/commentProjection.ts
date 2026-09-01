@@ -110,7 +110,11 @@ async function findProjection(
   if (file === undefined) {
     return null;
   }
-  const path = file.currentPath ?? file.originalPath;
+  const side = thread.anchor.side ?? "new";
+  const path =
+    thread.anchor.target.kind === "line" && side === "old"
+      ? file.originalPath
+      : file.currentPath ?? file.originalPath;
   if (path === null) {
     return null;
   }
@@ -136,6 +140,7 @@ async function findProjection(
     view: copyView(view.identity),
     path,
     target: { kind: "line", line },
+    side,
   };
 }
 
@@ -143,24 +148,26 @@ function findExactHunkLine(
   anchor: CommentAnchor,
   file: FileManifestEntry,
 ): number | null {
+  const side = anchor.side ?? "new";
   if (
     file.kind !== "text" ||
-    file.currentPath === null ||
+    (side === "old" ? file.originalPath : file.currentPath) === null ||
     anchor.storedHunk === null ||
     anchor.targetText === null ||
     anchor.target.kind !== "line"
   ) {
     return null;
   }
-
   const targetLine = anchor.target.line;
   const storedHunk = anchor.storedHunk;
   const targetIndexes = storedHunk.lines
     .map((line, index) => ({ line, index }))
     .filter(
       ({ line }) =>
-        line.kind !== "deletion" &&
-        line.newLine === targetLine &&
+        (side === "old" ? line.oldLine : line.newLine) === targetLine &&
+        (side === "old"
+          ? line.kind === "deletion" || line.kind === "context"
+          : line.kind === "addition" || line.kind === "context") &&
         line.content === anchor.targetText,
     );
   if (targetIndexes.length !== 1) {
@@ -181,10 +188,12 @@ function findExactHunkLine(
     }
     const target = hunk.lines[targetIndex];
     return target !== undefined &&
-      target.kind !== "deletion" &&
+      (side === "old"
+        ? target.kind === "deletion" || target.kind === "context"
+        : target.kind === "addition" || target.kind === "context") &&
       target.content === anchor.targetText &&
-      target.newLine !== null
-      ? [target.newLine]
+      (side === "old" ? target.oldLine : target.newLine) !== null
+      ? [side === "old" ? target.oldLine : target.newLine]
       : [];
   });
   const [onlyMatch] = matches;
@@ -203,12 +212,17 @@ async function findExactFullFileLine(
     anchor.target.kind !== "line" ||
     anchor.targetText === null ||
     file.kind !== "text" ||
-    file.currentPath === null ||
-    file.modifiedContent === null
+    (anchor.side === "old" ? file.originalPath : file.currentPath) === null ||
+    (anchor.side === "old" ? file.originalContent : file.modifiedContent) === null
   ) {
     return null;
   }
-  const content = decodeTextForDisplay(await readBlob(file.modifiedContent));
+  const reference =
+    anchor.side === "old" ? file.originalContent : file.modifiedContent;
+  if (reference === null) {
+    return null;
+  }
+  const content = decodeTextForDisplay(await readBlob(reference));
   const fingerprint = fileTextFingerprint(content);
   const lines = splitTextDocumentLines(content);
   if (

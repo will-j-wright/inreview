@@ -247,12 +247,9 @@ export class CommentService {
       }
       const snapshot = findSnapshot(record, input.snapshotId);
       const file = findFile(snapshot, input.view, input.fileId);
-      if (
-        (input.target.kind === "line" && input.side === "old") ||
-        (input.target.kind === "file" && input.side !== undefined)
-      ) {
+      if (input.target.kind === "file" && input.side !== undefined) {
         throw new InvalidCommentAnchorError(
-          "Comments can target file entries or lines on the new side only.",
+          "File comments cannot select a diff side.",
         );
       }
       const commentId = this.nextUniqueId(allIds(record));
@@ -263,9 +260,13 @@ export class CommentService {
         input.view,
         file,
         input.target,
+        input.side ?? "new",
         async (reference) => this.#store.blobs.get(reference),
       );
-      const path = file.currentPath ?? file.originalPath;
+      const path =
+        input.target.kind === "line" && input.side === "old"
+          ? file.originalPath
+          : file.currentPath ?? file.originalPath;
       if (path === null) {
         throw new InvalidCommentAnchorError("The target file has no path.");
       }
@@ -278,6 +279,9 @@ export class CommentService {
           view: copyView(input.view),
           path,
           target: copyTarget(input.target),
+          ...(input.target.kind === "line"
+            ? { side: input.side ?? "new" }
+            : {}),
         },
         state: "open",
         currentness: "current",
@@ -686,6 +690,7 @@ async function buildAnchor(
   view: ViewIdentity,
   file: FileManifestEntry,
   target: CommentTarget,
+  side: "old" | "new",
   readBlob: (reference: NonNullable<FileManifestEntry["modifiedContent"]>) => Promise<Buffer>,
 ): Promise<CommentThread["anchor"]> {
   if (target.kind === "file") {
@@ -709,9 +714,12 @@ async function buildAnchor(
       ),
     };
   }
-  if (file.kind !== "text" || file.currentPath === null || file.status === "deleted") {
+  const path = side === "old" ? file.originalPath : file.currentPath;
+  const contentReference =
+    side === "old" ? file.originalContent : file.modifiedContent;
+  if (file.kind !== "text" || path === null || contentReference === null) {
     throw new InvalidCommentAnchorError(
-      "Line threads require a text file with a new side.",
+      `Line threads require a text file with a stored ${side === "old" ? "original" : "modified"} side.`,
     );
   }
   const matches = file.hunks.flatMap((hunk) =>
@@ -719,11 +727,13 @@ async function buildAnchor(
       .map((line, index) => ({ hunk, line, index }))
       .filter(
         ({ line }) =>
-          line.newLine === target.line &&
-          (line.kind === "addition" || line.kind === "context"),
+          (side === "old" ? line.oldLine : line.newLine) === target.line &&
+          (side === "old"
+            ? line.kind === "deletion" || line.kind === "context"
+            : line.kind === "addition" || line.kind === "context"),
       ),
   );
-  if (matches.length === 1) {
+  if (side === "new" && matches.length === 1) {
     const match = matches[0];
     if (match === undefined) {
       throw new InvalidCommentAnchorError("The line anchor is invalid.");
@@ -734,6 +744,7 @@ async function buildAnchor(
       view: copyView(view),
       fileId: file.fileId,
       target: { kind: "line", line: target.line },
+      side,
       originalPath: file.originalPath,
       currentPath: file.currentPath,
       fileStatus: file.status,
@@ -743,22 +754,17 @@ async function buildAnchor(
       contextFingerprint: lineContextFingerprint(match.hunk, match.index),
     };
   }
-  if (matches.length > 1) {
+  if (side === "new" && matches.length > 1) {
     throw new InvalidCommentAnchorError(
       "The selected line occurs more than once in the displayed patch.",
     );
   }
-  if (file.modifiedContent === null) {
-    throw new InvalidCommentAnchorError(
-      "The selected file has no stored modified content.",
-    );
-  }
   let content: string;
   try {
-    content = decodeTextForDisplay(await readBlob(file.modifiedContent));
+    content = decodeTextForDisplay(await readBlob(contentReference));
   } catch (error) {
     throw new InvalidCommentAnchorError(
-      "The stored modified file content is unavailable.",
+      `The stored ${side === "old" ? "original" : "modified"} file content is unavailable.`,
       { cause: error },
     );
   }
@@ -785,6 +791,7 @@ async function buildAnchor(
     view: copyView(view),
     fileId: file.fileId,
     target: { kind: "line", line: target.line },
+    side,
     originalPath: file.originalPath,
     currentPath: file.currentPath,
     fileStatus: file.status,

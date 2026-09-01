@@ -49,6 +49,7 @@ export const commentAnchorSchema = z
     view: viewIdentitySchema,
     fileId: z.string().min(1).max(512).optional(),
     target: commentTargetSchema,
+    side: z.enum(["old", "new"]).optional(),
     originalPath: pathSchema.nullable(),
     currentPath: pathSchema.nullable(),
     fileStatus: fileStatusSchema,
@@ -63,7 +64,15 @@ export const commentAnchorSchema = z
       context.addIssue({ code: "custom", message: "An anchor must have a file path." });
     }
     if (anchor.target.kind === "line" && anchor.currentPath === null) {
-      context.addIssue({ code: "custom", message: "A line anchor must target the new side." });
+      if (anchor.side !== "old") {
+        context.addIssue({ code: "custom", message: "A new-side line anchor must have a current path." });
+      }
+    }
+    if (anchor.target.kind === "line" && anchor.side === "old" && anchor.originalPath === null) {
+      context.addIssue({ code: "custom", message: "An old-side line anchor must have an original path." });
+    }
+    if (anchor.target.kind === "file" && anchor.side !== undefined) {
+      context.addIssue({ code: "custom", message: "A file anchor cannot select a diff side." });
     }
     if (
       anchor.target.kind === "file" &&
@@ -105,6 +114,7 @@ export const commentProjectionSchema = z
     view: viewIdentitySchema,
     path: pathSchema,
     target: commentTargetSchema,
+    side: z.enum(["old", "new"]).optional(),
   })
   .strict();
 export type CommentProjection = z.infer<typeof commentProjectionSchema>;

@@ -192,6 +192,8 @@ describe("MCP review reads and mutations", () => {
       expect(defaults.comments[0]?.anchor.storedHunk?.lines[0]?.content).toBe(
         "hello",
       );
+      expect(defaults.comments[0]?.anchor.side).toBe("new");
+      expect(defaults.comments[0]?.currentLocation?.side).toBe("new");
 
       expect((await readComments(handlers, { status: "open" })).comments).toHaveLength(3);
       expect((await readComments(handlers, { status: "all" })).comments).toHaveLength(4);

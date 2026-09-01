@@ -25,17 +25,17 @@ const fingerprint = "a".repeat(64);
 const key = "comment-controller-test-key";
 
 describe("comment document mapping", () => {
-  it("offers only exact current new-side text hunk ranges", () => {
-    const record = recordWithRanges();
+  it("offers complete current text ranges on both stored diff sides", () => {
+    const record = recordWithOriginalSide();
     const identity = identityFor(record);
 
     expect(resolveCommentDocument(record, identity)?.file.fileId).toBe("file-a");
     expect(commentableRanges(record, identity, 20)).toEqual([
       { start: 1, end: 20 },
     ]);
-    expect(commentableRanges(record, { ...identity, side: "original" }, 20)).toEqual(
-      [],
-    );
+    expect(commentableRanges(record, { ...identity, side: "original" }, 20)).toEqual([
+      { start: 1, end: 20 },
+    ]);
     expect(
       commentableRanges(
         {
@@ -55,6 +55,45 @@ describe("comment document mapping", () => {
         ...identity,
         repositoryPath: "other.txt",
       }, 20),
+    ).toEqual([]);
+    const added = recordWithRanges();
+    expect(
+      commentableRanges(
+        added,
+        { ...identityFor(added), side: "original" },
+        20,
+      ),
+    ).toEqual([]);
+  });
+
+  it("offers the original side of a deleted text file", () => {
+    const base = recordWithOriginalSide();
+    const record: ReviewRecord = {
+      ...base,
+      snapshots: base.snapshots.map((snapshot) => ({
+        ...snapshot,
+        views: snapshot.views.map((view) => ({
+          ...view,
+          files: view.files.map((file) => ({
+            ...file,
+            status: "deleted" as const,
+            currentPath: null,
+            modifiedContent: null,
+          })),
+        })),
+      })),
+    };
+    const original = {
+      ...identityFor(record),
+      side: "original" as const,
+      repositoryPath: "file.txt",
+    };
+
+    expect(commentableRanges(record, original, 20)).toEqual([
+      { start: 1, end: 20 },
+    ]);
+    expect(
+      commentableRanges(record, { ...original, side: "modified" }, 20),
     ).toEqual([]);
   });
 
@@ -126,6 +165,33 @@ describe("comment document mapping", () => {
       ]),
     ).toEqual([[outdated.commentId, 1, true]]);
   });
+
+  it("places old-side threads only on the original document", () => {
+    const base = recordWithOriginalSide();
+    const thread = base.threads[0];
+    if (thread?.projection == null) {
+      throw new Error("Missing fixture thread.");
+    }
+    const oldThread: PersistedCommentThread = {
+      ...structuredClone(thread),
+      anchor: {
+        ...structuredClone(thread.anchor),
+        side: "old",
+        originalPath: "file.txt",
+      },
+      projection: {
+        ...structuredClone(thread.projection),
+        side: "old",
+        path: "file.txt",
+      },
+    };
+    const record = { ...base, threads: [oldThread] };
+    const modified = identityFor(record);
+    const original = { ...modified, side: "original" as const };
+
+    expect(commentPlacements(record, modified)).toEqual([]);
+    expect(commentPlacements(record, original)).toHaveLength(1);
+  });
 });
 
 describe("VS Code comment adapter", () => {
@@ -165,7 +231,7 @@ describe("VS Code comment adapter", () => {
   });
 
   it("persists create, reply, edit, delete, resolve, reopen, and file comments", async () => {
-    const record = recordWithRanges();
+    const record = recordWithOriginalSide();
     const harness = makeHarness(record);
     const adapter = new InReviewCommentController({
       service: harness.service,
@@ -223,6 +289,26 @@ describe("VS Code comment adapter", () => {
       }),
     );
     expect(pending.disposed).toBe(true);
+
+    const originalIdentity = {
+      ...identityFor(record),
+      side: "original" as const,
+    };
+    const originalUri = new VirtualDocumentUriCodec(key, {
+      from: (components) => TestUri.from(components),
+    }).encode(originalIdentity);
+    const oldPending = makeRenderedThread(
+      originalUri,
+      [],
+      new TestRange(0, 0, 0, 3),
+    );
+    await adapter.submit({ thread: oldPending, text: "Old-side thread" });
+    expect(harness.commentService.createThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: { kind: "line", line: 1 },
+        side: "old",
+      }),
+    );
     adapter.dispose();
   });
 
@@ -750,6 +836,25 @@ function recordWithRanges(): ReviewRecord {
         ],
       },
     ],
+  };
+}
+
+function recordWithOriginalSide(): ReviewRecord {
+  const record = recordWithRanges();
+  return {
+    ...record,
+    snapshots: record.snapshots.map((snapshot) => ({
+      ...snapshot,
+      views: snapshot.views.map((view) => ({
+        ...view,
+        files: view.files.map((file) => ({
+          ...file,
+          status: "modified" as const,
+          originalPath: "file.txt",
+          originalContent: file.modifiedContent,
+        })),
+      })),
+    })),
   };
 }
 

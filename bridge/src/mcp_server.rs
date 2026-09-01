@@ -172,7 +172,7 @@ fn tool_definitions() -> Vec<Tool> {
         ),
         tool(
             "read_comments",
-            "Read bounded current, outdated, open, or resolved review comments from the connected workspace.",
+            "Read bounded current, outdated, open, or resolved review comments. A side of old refers to immutable pre-change snapshot content; use the returned target line and exact stored context instead of the current working-tree line.",
             json!({
                 "type": "object",
                 "properties": {
