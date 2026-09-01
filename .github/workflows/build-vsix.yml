@@ -1,4 +1,4 @@
-name: Build VSIX packages
+name: Publish VSIX release
 
 on:
   push:
@@ -62,3 +62,79 @@ jobs:
           path: inreview-${{ matrix.target }}-*.vsix
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish GitHub release
+    if: github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download all VSIX packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: inreview-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify the release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          expected_targets=(
+            darwin-arm64
+            darwin-x64
+            linux-arm64
+            linux-x64
+            win32-arm64
+            win32-x64
+          )
+          shopt -s nullglob
+          assets=(release-assets/*.vsix)
+
+          if [[ ${#assets[@]} -ne ${#expected_targets[@]} ]]; then
+            printf 'Expected %d VSIX files, found %d.\n' \
+              "${#expected_targets[@]}" "${#assets[@]}" >&2
+            exit 1
+          fi
+
+          for target in "${expected_targets[@]}"; do
+            matches=(release-assets/inreview-"${target}"-*.vsix)
+            if [[ ${#matches[@]} -ne 1 ]]; then
+              printf 'Expected one VSIX for %s, found %d.\n' \
+                "${target}" "${#matches[@]}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(node --print "require('./package.json').version")"
+          short_sha="${GITHUB_SHA::12}"
+          tag="v${version}-${short_sha}"
+          title="InReview ${version} (${short_sha})"
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" release-assets/*.vsix --clobber
+          else
+            gh release create "${tag}" release-assets/*.vsix \
+              --generate-notes \
+              --target "${GITHUB_SHA}" \
+              --title "${title}"
+          fi
