@@ -23,6 +23,7 @@ import {
   RefreshService,
   type RefreshReviewOptions,
   type RefreshReviewResult,
+  type IncludeNewChangesResult,
 } from "./refreshService";
 import { CommentService } from "./commentService";
 import type {
@@ -105,6 +106,15 @@ export interface ReviewStartSession {
     preview: ReviewSelectionPreview,
     options?: StartSelectedReviewOptions,
   ): Promise<StartReviewResult>;
+}
+
+export interface IncludeNewChangesSession {
+  readonly operationId: string;
+  readonly candidates: readonly ReviewSelectionCandidate[];
+  includeThrough(
+    newestChangeId: string,
+    options?: Pick<RefreshReviewOptions, "confirmLargeDiff" | "signal">,
+  ): Promise<IncludeNewChangesResult>;
 }
 
 export interface ReviewServiceOptions {
@@ -412,6 +422,72 @@ export class ReviewService {
       });
     }
     return result;
+  }
+
+  public async includeNewChanges(
+    options: RefreshReviewOptions = {},
+  ): Promise<IncludeNewChangesResult> {
+    const result = await this.refreshService.includeNewChanges(options);
+    this.emit({
+      type: "extended",
+      repositoryFingerprint: this.storageKey,
+      reviewId: result.record.review.id,
+      snapshotId: result.record.review.currentSnapshotId,
+    });
+    return result;
+  }
+
+  public async beginIncludeNewChanges(
+    signal?: AbortSignal,
+  ): Promise<IncludeNewChangesSession> {
+    const active = await this.requireActive();
+    const readSession = await this.#repository.openReadSession(signal);
+    const completeSelection = await readSession.extendSelection(
+      active.review.orderedChangeIds,
+      undefined,
+      signal,
+    );
+    const candidates = completeSelection.commits
+      .slice(active.review.orderedChangeIds.length)
+      .map(toSelectionCandidate);
+    return {
+      operationId: readSession.operationId,
+      candidates,
+      includeThrough: async (newestChangeId, options = {}) => {
+        if (!candidates.some(({ changeId }) => changeId === newestChangeId)) {
+          throw new StaleReviewError(
+            "The selected change is not available in this extension session.",
+          );
+        }
+        const currentOperationId =
+          await this.#repository.getCurrentOperationId(options.signal);
+        if (currentOperationId !== readSession.operationId) {
+          throw new StaleReviewError(
+            "The repository changed while the new-change selection was open. Reload the selection and try again.",
+          );
+        }
+        const selection = await readSession.extendSelection(
+          active.review.orderedChangeIds,
+          newestChangeId,
+          options.signal,
+        );
+        const result = await this.refreshService.includeSelectedChanges(
+          selection,
+          readSession,
+          {
+            ...options,
+            expectedCurrentSnapshotId: active.review.currentSnapshotId,
+          },
+        );
+        this.emit({
+          type: "extended",
+          repositoryFingerprint: this.storageKey,
+          reviewId: result.record.review.id,
+          snapshotId: result.record.review.currentSnapshotId,
+        });
+        return result;
+      },
+    };
   }
 
   public async archiveActiveReview(

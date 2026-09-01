@@ -274,6 +274,66 @@ describe("JjClient", () => {
     expect(revset).not.toContain("@");
   });
 
+  it("extends a stored selection only through direct descendants ending at @", async () => {
+    const first = commit(1, ROOT_COMMIT_ID);
+    const second = commit(2, first.commitId as string, {
+      currentWorkingCopy: true,
+    });
+    const { client, executor } = clientWithSession(
+      ok(jsonLine(first)),
+      ok(jsonLine(first) + jsonLine(second)),
+    );
+    const session = await client.openReadSession();
+
+    const selection = await session.extendSelection([
+      first.changeId as string,
+    ]);
+
+    expect(selection.changeIds).toEqual([first.changeId, second.changeId]);
+    expect(executor.requests[3]?.args).toContain(
+      `change_id("${String(first.changeId)}")::@`,
+    );
+  });
+
+  it("extends a stored selection through a chosen descendant before @", async () => {
+    const first = commit(1, ROOT_COMMIT_ID);
+    const second = commit(2, first.commitId as string);
+    const { client, executor } = clientWithSession(
+      ok(jsonLine(first)),
+      ok(jsonLine(second)),
+      ok(jsonLine(first) + jsonLine(second)),
+    );
+    const session = await client.openReadSession();
+
+    const selection = await session.extendSelection(
+      [first.changeId as string],
+      second.changeId as string,
+    );
+
+    expect(selection.changeIds).toEqual([first.changeId, second.changeId]);
+    expect(selection.commits.some(({ currentWorkingCopy }) => currentWorkingCopy)).toBe(
+      false,
+    );
+    expect(executor.requests[4]?.args).toContain(
+      `change_id("${String(first.changeId)}")::change_id("${String(second.changeId)}")`,
+    );
+  });
+
+  it("rejects extension when @ has no new descendant change", async () => {
+    const current = commit(1, ROOT_COMMIT_ID, {
+      currentWorkingCopy: true,
+    });
+    const client = clientWithSession(
+      ok(jsonLine(current)),
+      ok(jsonLine(current)),
+    ).client;
+    const session = await client.openReadSession();
+
+    await expect(
+      session.extendSelection([current.changeId as string]),
+    ).rejects.toThrow("no new descendant changes");
+  });
+
   it("lists bounded history and reports whether older changes are available", async () => {
     const first = commit(1, ROOT_COMMIT_ID);
     const second = commit(2, first.commitId as string);

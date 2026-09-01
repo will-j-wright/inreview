@@ -1,6 +1,6 @@
 import type { ReviewRecord } from "../domain/comments";
 import type { CommentThread } from "../domain/comments";
-import type { Snapshot } from "../domain/review";
+import type { BlobReference, Snapshot } from "../domain/review";
 import type {
   PreparedSnapshot,
   SnapshotPreflight,
@@ -26,6 +26,11 @@ export interface ReviewReadSession extends SnapshotReadSession {
   ): Promise<ReviewSelection>;
   resolveSelection(
     storedChangeIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<ReviewSelection>;
+  extendSelection(
+    storedChangeIds: readonly string[],
+    newestChangeId?: string,
     signal?: AbortSignal,
   ): Promise<ReviewSelection>;
 }
@@ -58,6 +63,7 @@ export interface CommentProjectionContext {
   readonly previous: ReviewRecord;
   readonly nextSnapshot: Snapshot;
   readonly defaultFileProjections: readonly CommentThread[];
+  readonly readBlob: (reference: BlobReference) => Promise<Buffer>;
 }
 
 export type CommentProjectionHook = (
@@ -67,6 +73,7 @@ export type CommentProjectionHook = (
 export type ReviewChangeType =
   | "started"
   | "refreshed"
+  | "extended"
   | "archived"
   | "restored"
   | "renamed"

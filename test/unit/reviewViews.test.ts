@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { JjNoNewChangesError } from "../../src/jj/errors";
 import { LargeDiffConfirmationRequiredError } from "../../src/review";
 import {
   ActiveReviewTree,
@@ -159,6 +160,56 @@ describe("review command flows", () => {
     expect(service.renameActiveReview).not.toHaveBeenCalled();
   });
 
+  it("includes new changes after large-diff confirmation", async () => {
+    const record = makeReviewRecord(fingerprint);
+    const service = fakeService(record);
+    const first = selectionCandidate("l", "2", "First fix");
+    const second = selectionCandidate(
+      "m",
+      "3",
+      "Second fix",
+      first.commitId,
+    );
+    const includeThrough = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new LargeDiffConfirmationRequiredError(20_000, 10_000),
+      )
+      .mockResolvedValueOnce({ record, addedChangeCount: 2 });
+    service.beginIncludeNewChanges = vi.fn().mockResolvedValue({
+      operationId: "a".repeat(128),
+      candidates: [first, second],
+      includeThrough,
+    });
+    const ui = new FakeUi(undefined, ["Continue"], [second.changeId]);
+
+    await controllerFor(service, ui, new FakeState()).includeNewChanges();
+
+    expect(includeThrough).toHaveBeenNthCalledWith(1, second.changeId);
+    expect(includeThrough).toHaveBeenNthCalledWith(2, second.changeId, {
+      confirmLargeDiff: true,
+    });
+    expect(ui.information).toContain(
+      "Included 2 new changes in the active review.",
+    );
+  });
+
+  it("reports an already included working copy as information", async () => {
+    const record = makeReviewRecord(fingerprint);
+    const service = fakeService(record);
+    service.beginIncludeNewChanges = vi
+      .fn()
+      .mockRejectedValue(new JjNoNewChangesError());
+    const ui = new FakeUi(undefined, []);
+
+    await controllerFor(service, ui, new FakeState()).includeNewChanges();
+
+    expect(ui.information).toContain(
+      "The current working copy has no new descendant changes to include.",
+    );
+    expect(ui.errors).toEqual([]);
+  });
+
   it("selects a historical range by newest and oldest included changes", async () => {
     const record = makeReviewRecord(fingerprint);
     const service = fakeService(record);
@@ -291,6 +342,7 @@ function fakeService(
     getActiveReviewOrUndefined: vi.fn().mockResolvedValue(record),
     getActiveReview: vi.fn().mockResolvedValue(record),
     beginStartReview: vi.fn(),
+    beginIncludeNewChanges: vi.fn(),
     startReview: vi.fn(),
     archiveAndStartReview: vi.fn(),
     refreshReview: vi.fn(),

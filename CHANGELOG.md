@@ -4,6 +4,13 @@
 
 ### Added
 
+- Comment on unchanged lines outside displayed hunks for text files already
+  included in a review diff, with exact immutable full-file anchors across
+  refreshes.
+- Comment on deleted lines and any other stored original-side line in a changed
+  text file, with side-aware exact projection across refreshes.
+- Choose a new direct descendant endpoint to append to an active review without
+  replacing its comment and snapshot history.
 - Select a historical contiguous range through searchable newest and oldest
   change pickers, or enter an advanced jj revset and preview its resolved
   changes before capture.

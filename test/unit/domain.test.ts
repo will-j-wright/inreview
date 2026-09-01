@@ -38,4 +38,37 @@ describe("domain models", () => {
       "The review record is invalid.",
     );
   });
+
+  it("validates persisted comment sides while accepting legacy new-side anchors", () => {
+    const record = makeReviewRecord("a".repeat(64));
+    expect(() => parseReviewRecord(record)).not.toThrow();
+
+    const oldWithoutPath = structuredClone(record);
+    const oldAnchor = oldWithoutPath.threads[0]?.anchor;
+    if (oldAnchor === undefined) {
+      throw new Error("The fixture must contain an anchor.");
+    }
+    oldAnchor.side = "old";
+    expect(() => parseReviewRecord(oldWithoutPath)).toThrow(DomainError);
+
+    const newWithoutPath = structuredClone(record);
+    const newAnchor = newWithoutPath.threads[0]?.anchor;
+    if (newAnchor === undefined) {
+      throw new Error("The fixture must contain an anchor.");
+    }
+    newAnchor.currentPath = null;
+    expect(() => parseReviewRecord(newWithoutPath)).toThrow(DomainError);
+
+    const sidedFile = structuredClone(record);
+    const fileAnchor = sidedFile.threads[0]?.anchor;
+    if (fileAnchor === undefined) {
+      throw new Error("The fixture must contain an anchor.");
+    }
+    fileAnchor.target = { kind: "file" };
+    fileAnchor.targetText = null;
+    fileAnchor.storedHunk = null;
+    fileAnchor.fullFileContext = null;
+    fileAnchor.side = "new";
+    expect(() => parseReviewRecord(sidedFile)).toThrow(DomainError);
+  });
 });

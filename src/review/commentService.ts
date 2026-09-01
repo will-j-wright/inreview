@@ -14,11 +14,15 @@ import type {
 } from "../domain/review";
 import { viewIdentityKey } from "../domain/review";
 import { StorageError } from "../domain/errors";
+import { decodeTextForDisplay } from "../diff/fileKinds";
 import type { ReviewStore } from "../storage/reviewStore";
 import { runRepositoryMutation } from "./mutationQueue";
 import {
+  fileTextFingerprint,
   fileContextFingerprint,
+  fullFileContextFingerprint,
   lineContextFingerprint,
+  splitTextDocumentLines,
 } from "./commentProjection";
 
 export const COMMENT_BODY_MAX_LENGTH = 65_536;
@@ -69,8 +73,8 @@ export class ImmutableCommentError extends CommentServiceError {
 }
 
 export class InvalidCommentAnchorError extends CommentServiceError {
-  public constructor(message: string) {
-    super("invalid-anchor", message);
+  public constructor(message: string, options?: ErrorOptions) {
+    super("invalid-anchor", message, options);
   }
 }
 
@@ -234,7 +238,7 @@ export class CommentService {
   ): Promise<CommentThread> {
     const body = validateBody(input.body);
     const displayName = validateHumanName(input.displayName);
-    return this.commit(input.reviewId, "created", (record, timestamp) => {
+    return this.commit(input.reviewId, "created", async (record, timestamp) => {
       assertCurrentSnapshot(record, input.expectedCurrentSnapshotId);
       if (record.review.currentSnapshotId !== input.snapshotId) {
         throw new StaleCommentError(
@@ -243,18 +247,26 @@ export class CommentService {
       }
       const snapshot = findSnapshot(record, input.snapshotId);
       const file = findFile(snapshot, input.view, input.fileId);
-      if (
-        (input.target.kind === "line" && input.side === "old") ||
-        (input.target.kind === "file" && input.side !== undefined)
-      ) {
+      if (input.target.kind === "file" && input.side !== undefined) {
         throw new InvalidCommentAnchorError(
-          "Comments can target file entries or lines on the new side only.",
+          "File comments cannot select a diff side.",
         );
       }
       const commentId = this.nextUniqueId(allIds(record));
       const messageId = this.nextUniqueId(new Set([...allIds(record), commentId]));
-      const anchor = buildAnchor(record, snapshot, input.view, file, input.target);
-      const path = file.currentPath ?? file.originalPath;
+      const anchor = await buildAnchor(
+        record,
+        snapshot,
+        input.view,
+        file,
+        input.target,
+        input.side ?? "new",
+        async (reference) => this.#store.blobs.get(reference),
+      );
+      const path =
+        input.target.kind === "line" && input.side === "old"
+          ? file.originalPath
+          : file.currentPath ?? file.originalPath;
       if (path === null) {
         throw new InvalidCommentAnchorError("The target file has no path.");
       }
@@ -267,6 +279,9 @@ export class CommentService {
           view: copyView(input.view),
           path,
           target: copyTarget(input.target),
+          ...(input.target.kind === "line"
+            ? { side: input.side ?? "new" }
+            : {}),
         },
         state: "open",
         currentness: "current",
@@ -669,13 +684,15 @@ export class CommentService {
   }
 }
 
-function buildAnchor(
+async function buildAnchor(
   record: ReviewRecord,
   snapshot: Snapshot,
   view: ViewIdentity,
   file: FileManifestEntry,
   target: CommentTarget,
-): CommentThread["anchor"] {
+  side: "old" | "new",
+  readBlob: (reference: NonNullable<FileManifestEntry["modifiedContent"]>) => Promise<Buffer>,
+): Promise<CommentThread["anchor"]> {
   if (target.kind === "file") {
     return {
       reviewId: record.review.id,
@@ -688,6 +705,7 @@ function buildAnchor(
       fileStatus: file.status,
       targetText: null,
       storedHunk: null,
+      fullFileContext: null,
       contextFingerprint: fileContextFingerprint(
         record.review.id,
         snapshot.id,
@@ -696,9 +714,12 @@ function buildAnchor(
       ),
     };
   }
-  if (file.kind !== "text" || file.currentPath === null || file.status === "deleted") {
+  const path = side === "old" ? file.originalPath : file.currentPath;
+  const contentReference =
+    side === "old" ? file.originalContent : file.modifiedContent;
+  if (file.kind !== "text" || path === null || contentReference === null) {
     throw new InvalidCommentAnchorError(
-      "Line threads require a text file with a new side.",
+      `Line threads require a text file with a stored ${side === "old" ? "original" : "modified"} side.`,
     );
   }
   const matches = file.hunks.flatMap((hunk) =>
@@ -706,31 +727,85 @@ function buildAnchor(
       .map((line, index) => ({ hunk, line, index }))
       .filter(
         ({ line }) =>
-          line.newLine === target.line &&
-          (line.kind === "addition" || line.kind === "context"),
+          (side === "old" ? line.oldLine : line.newLine) === target.line &&
+          (side === "old"
+            ? line.kind === "deletion" || line.kind === "context"
+            : line.kind === "addition" || line.kind === "context"),
       ),
   );
-  if (matches.length !== 1) {
+  if (side === "new" && matches.length === 1) {
+    const match = matches[0];
+    if (match === undefined) {
+      throw new InvalidCommentAnchorError("The line anchor is invalid.");
+    }
+    return {
+      reviewId: record.review.id,
+      snapshotId: snapshot.id,
+      view: copyView(view),
+      fileId: file.fileId,
+      target: { kind: "line", line: target.line },
+      side,
+      originalPath: file.originalPath,
+      currentPath: file.currentPath,
+      fileStatus: file.status,
+      targetText: match.line.content,
+      storedHunk: structuredClone(match.hunk),
+      fullFileContext: null,
+      contextFingerprint: lineContextFingerprint(match.hunk, match.index),
+    };
+  }
+  if (side === "new" && matches.length > 1) {
     throw new InvalidCommentAnchorError(
-      "The line is not an added or unchanged-context line in a displayed hunk.",
+      "The selected line occurs more than once in the displayed patch.",
     );
   }
-  const match = matches[0];
-  if (match === undefined) {
-    throw new InvalidCommentAnchorError("The line anchor is invalid.");
+  let content: string;
+  try {
+    content = decodeTextForDisplay(await readBlob(contentReference));
+  } catch (error) {
+    throw new InvalidCommentAnchorError(
+      `The stored ${side === "old" ? "original" : "modified"} file content is unavailable.`,
+      { cause: error },
+    );
   }
+  const lines = splitTextDocumentLines(content);
+  const targetIndex = target.line - 1;
+  const targetText = lines[targetIndex];
+  if (targetText === undefined) {
+    throw new InvalidCommentAnchorError(
+      "The selected line is outside the stored modified file.",
+    );
+  }
+  const contextStart = Math.max(0, targetIndex - 5);
+  const contextEnd = Math.min(lines.length, targetIndex + 6);
+  const contextLines = lines.slice(contextStart, contextEnd);
+  if (contextLines.some((line) => line.length > 65_536)) {
+    throw new InvalidCommentAnchorError(
+      "The selected line context is too large to store safely.",
+    );
+  }
+  const contextTargetIndex = targetIndex - contextStart;
   return {
     reviewId: record.review.id,
     snapshotId: snapshot.id,
     view: copyView(view),
     fileId: file.fileId,
     target: { kind: "line", line: target.line },
+    side,
     originalPath: file.originalPath,
     currentPath: file.currentPath,
     fileStatus: file.status,
-    targetText: match.line.content,
-    storedHunk: structuredClone(match.hunk),
-    contextFingerprint: lineContextFingerprint(match.hunk, match.index),
+    targetText,
+    storedHunk: null,
+    fullFileContext: {
+      targetIndex: contextTargetIndex,
+      lines: contextLines,
+      fileFingerprint: fileTextFingerprint(content),
+    },
+    contextFingerprint: fullFileContextFingerprint(
+      contextTargetIndex,
+      contextLines,
+    ),
   };
 }
 

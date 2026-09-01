@@ -46,7 +46,8 @@ Keep domain, storage, jj, and review services independent of `vscode`. Put VS Co
 - Keep MCP runtime lifecycle operations serialized. Do not bypass the review
   store's in-process write queue or cross-process repository lease.
 - Keep only exact, unique comment projections current. Ambiguous or missing targets become outdated.
-- Allow line comments only on added or unchanged new-side hunk lines. Never allow deleted-line comments.
+- Allow line comments on any stored original-side or modified-side line of a
+  changed text file. Anchor and project each line on its recorded side.
 - Keep Agent messages immutable. Batch resolution must validate every thread before changing any thread.
 - Keep archived reviews read-only until restored.
 - Do not add fuzzy comment matching without an explicit product decision.

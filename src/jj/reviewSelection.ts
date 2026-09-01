@@ -2,6 +2,7 @@ import {
   JjAmbiguousChangeError,
   JjConflictError,
   JjMergeError,
+  JjNoNewChangesError,
   JjSelectionError,
   JjStaleSelectionError,
 } from "./errors";
@@ -79,6 +80,44 @@ export function buildRefreshSelection(
   return makeSelection(
     operationId,
     storedChangeIds.length,
+    records,
+    false,
+  );
+}
+
+export function buildExtendedSelection(
+  operationId: string,
+  current: ReviewSelection,
+  records: readonly JjCommit[],
+  requireCurrentWorkingCopy = true,
+): ReviewSelection {
+  for (const [index, commit] of current.commits.entries()) {
+    const candidate = records[index];
+    if (
+      candidate?.changeId !== commit.changeId ||
+      candidate.commitId !== commit.commitId
+    ) {
+      throw new JjSelectionError(
+        "The current working copy is not a direct descendant of the active review head.",
+      );
+    }
+  }
+  if (records.length === current.commits.length) {
+    throw new JjNoNewChangesError();
+  }
+  if (
+    requireCurrentWorkingCopy &&
+    (records.filter((record) => record.currentWorkingCopy).length !== 1 ||
+      records.at(-1)?.currentWorkingCopy !== true)
+  ) {
+    throw new JjSelectionError(
+      "The expanded review must end at the current working copy.",
+    );
+  }
+  validateCommits(records, false);
+  return makeSelection(
+    operationId,
+    records.length,
     records,
     false,
   );

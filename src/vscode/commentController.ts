@@ -156,7 +156,7 @@ export class InReviewCommentController implements vscode.Disposable {
         } catch {
           return [];
         }
-        return commentableRanges(record, identity)
+        return commentableRanges(record, identity, document.lineCount)
           .filter(({ end }) => end <= document.lineCount)
           .map(
             ({ start, end }) =>
@@ -223,7 +223,7 @@ export class InReviewCommentController implements vscode.Disposable {
       view: identity.view,
       fileId: identity.fileId,
       target: { kind: "line", line },
-      side: "new",
+      side: identity.side === "original" ? "old" : "new",
       body,
       displayName: "You",
       expectedCurrentSnapshotId: record.review.currentSnapshotId,
@@ -380,7 +380,7 @@ export class InReviewCommentController implements vscode.Disposable {
       return;
     }
     await Promise.resolve();
-    const uri = this.#codec.encode(target.modifiedIdentity);
+    const uri = this.#codec.encode(target.targetIdentity);
     const editor = this.#vscode.window.visibleTextEditors.find(
       (candidate) => candidate.document.uri.toString() === uri.toString(),
     );
@@ -433,7 +433,7 @@ export class InReviewCommentController implements vscode.Disposable {
     const seen = new Set<string>();
     for (const document of this.#vscode.workspace.textDocuments) {
       const identity = this.decode(document.uri);
-      if (identity?.side !== "modified") {
+      if (identity === undefined) {
         continue;
       }
       let record = records.get(identity.reviewId);
@@ -812,7 +812,6 @@ export function resolveCommentDocument(
   identity: VirtualDocumentIdentity,
 ): CommentDocumentTarget | undefined {
   if (
-    identity.side !== "modified" ||
     identity.readOnly ||
     record.review.state !== "active" ||
     identity.snapshotId !== record.review.currentSnapshotId
@@ -828,8 +827,11 @@ export function resolveCommentDocument(
   if (
     snapshot === undefined ||
     file?.kind !== "text" ||
-    file.status === "deleted" ||
-    file.currentPath !== identity.repositoryPath
+    (identity.side === "original"
+      ? file.originalPath !== identity.repositoryPath ||
+        file.originalContent === null
+      : file.currentPath !== identity.repositoryPath ||
+        file.modifiedContent === null)
   ) {
     return undefined;
   }
@@ -839,25 +841,20 @@ export function resolveCommentDocument(
 export function commentableRanges(
   record: ReviewRecord,
   identity: VirtualDocumentIdentity,
+  lineCount: number,
 ): readonly LineRange[] {
   const target = resolveCommentDocument(record, identity);
-  if (target === undefined) {
+  if (target === undefined || lineCount < 1) {
     return [];
   }
-  return (
-    target.file.commentableRanges ??
-    rangesFromHunks(target.file)
-  ).filter(({ start, end }) => start > 0 && end >= start);
+  return [{ start: 1, end: lineCount }];
 }
 
 export function commentPlacements(
   record: ReviewRecord,
   identity: VirtualDocumentIdentity,
 ): readonly CommentPlacement[] {
-  if (
-    identity.side !== "modified" ||
-    (record.review.state === "archived" && !identity.readOnly)
-  ) {
+  if (record.review.state === "archived" && !identity.readOnly) {
     return [];
   }
   return record.threads.flatMap((thread) => {
@@ -868,18 +865,25 @@ export function commentPlacements(
             view: thread.projection.view,
             path: thread.projection.path,
             target: thread.projection.target,
+            side: thread.projection.side ?? thread.anchor.side ?? "new",
             historical: false,
           }
         : {
             snapshotId: thread.anchor.snapshotId,
             view: thread.anchor.view,
-            path: thread.anchor.currentPath ?? thread.anchor.originalPath,
+            path:
+              thread.anchor.target.kind === "line" &&
+              thread.anchor.side === "old"
+                ? thread.anchor.originalPath
+                : thread.anchor.currentPath ?? thread.anchor.originalPath,
             target: thread.anchor.target,
+            side: thread.anchor.side ?? "new",
             historical: true,
           };
     if (
       location.path === null ||
       location.snapshotId !== identity.snapshotId ||
+      (location.side === "old" ? "original" : "modified") !== identity.side ||
       viewIdentityKey(location.view) !== viewIdentityKey(identity.view) ||
       location.path !== identity.repositoryPath
     ) {
@@ -905,29 +909,6 @@ export function commentPlacements(
   });
 }
 
-function rangesFromHunks(file: FileManifestEntry): readonly LineRange[] {
-  const lines = new Set<number>();
-  for (const hunk of file.hunks) {
-    for (const line of hunk.lines) {
-      if (
-        (line.kind === "addition" || line.kind === "context") &&
-        line.newLine !== null
-      ) {
-        lines.add(line.newLine);
-      }
-    }
-  }
-  const ranges: { start: number; end: number }[] = [];
-  for (const line of [...lines].sort((left, right) => left - right)) {
-    const previous = ranges.at(-1);
-    if (previous !== undefined && previous.end + 1 === line) {
-      previous.end = line;
-    } else {
-      ranges.push({ start: line, end: line });
-    }
-  }
-  return ranges;
-}
 
 function matchesThreadFile(
   thread: PersistedCommentThread,
@@ -973,7 +954,7 @@ function revealTarget(
 ):
   | {
       readonly request: RevealFileRequest;
-      readonly modifiedIdentity: VirtualDocumentIdentity;
+      readonly targetIdentity: VirtualDocumentIdentity;
       readonly line?: number;
     }
   | undefined {
@@ -984,8 +965,13 @@ function revealTarget(
   const viewIdentity = current ? thread.projection?.view : thread.anchor.view;
   const path = current
     ? thread.projection?.path
-    : thread.anchor.currentPath ?? thread.anchor.originalPath;
+    : thread.anchor.target.kind === "line" && thread.anchor.side === "old"
+      ? thread.anchor.originalPath
+      : thread.anchor.currentPath ?? thread.anchor.originalPath;
   const target = current ? thread.projection?.target : thread.anchor.target;
+  const side =
+    (current ? thread.projection?.side : thread.anchor.side) ??
+    "new";
   if (
     snapshotId === undefined ||
     viewIdentity === undefined ||
@@ -1011,7 +997,10 @@ function revealTarget(
       );
     }) ?? [];
   const file = candidates.length === 1 ? candidates[0] : undefined;
-  const repositoryPath = file?.currentPath ?? file?.originalPath;
+  const repositoryPath =
+    target.kind === "line" && side === "old"
+      ? file?.originalPath
+      : file?.currentPath ?? file?.originalPath;
   if (file === undefined || repositoryPath === null || repositoryPath === undefined) {
     return undefined;
   }
@@ -1024,12 +1013,12 @@ function revealTarget(
       fileId: file.fileId,
       readOnly,
     },
-    modifiedIdentity: {
+    targetIdentity: {
       reviewId: record.review.id,
       snapshotId,
       view: viewIdentity,
       fileId: file.fileId,
-      side: "modified",
+      side: target.kind === "line" && side === "old" ? "original" : "modified",
       repositoryPath,
       readOnly,
     },

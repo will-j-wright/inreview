@@ -377,19 +377,15 @@ function safeFileManifest(file: FileManifestEntry) {
     currentPath: file.currentPath,
     addedLines: file.addedLines,
     deletedLines: file.deletedLines,
-    ...(file.commentableRanges === undefined
-      ? {}
-      : {
-          commentableRanges: file.commentableRanges.map((range) => ({
-            ...range,
-          })),
-        }),
     ...(file.summary === undefined ? {} : { summary: { ...file.summary } }),
   };
 }
 
 function commentThreadOutput(thread: CommentThread) {
-  const anchorPath = thread.anchor.currentPath ?? thread.anchor.originalPath;
+  const anchorPath =
+    thread.anchor.target.kind === "line" && thread.anchor.side === "old"
+      ? thread.anchor.originalPath
+      : thread.anchor.currentPath ?? thread.anchor.originalPath;
   if (anchorPath === null) {
     throw new DomainError(
       "INVARIANT_VIOLATION",
@@ -413,9 +409,20 @@ function commentThreadOutput(thread: CommentThread) {
       currentPath: thread.anchor.currentPath,
       line:
         thread.anchor.target.kind === "line" ? thread.anchor.target.line : null,
+      side:
+        thread.anchor.target.kind === "line"
+          ? thread.anchor.side ?? "new"
+          : null,
       fileStatus: thread.anchor.fileStatus,
       targetLine: thread.anchor.targetText,
       storedHunk: thread.anchor.storedHunk,
+      fullFileContext:
+        thread.anchor.fullFileContext == null
+          ? null
+          : {
+              targetIndex: thread.anchor.fullFileContext.targetIndex,
+              lines: [...thread.anchor.fullFileContext.lines],
+            },
     },
     currentLocation:
       thread.projection === null
@@ -427,6 +434,10 @@ function commentThreadOutput(thread: CommentThread) {
             line:
               thread.projection.target.kind === "line"
                 ? thread.projection.target.line
+                : null,
+            side:
+              thread.projection.target.kind === "line"
+                ? thread.projection.side ?? thread.anchor.side ?? "new"
                 : null,
           },
     messages: thread.messages.map(commentMessageOutput),

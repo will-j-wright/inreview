@@ -15,7 +15,8 @@ and resolve them after it updates the code.
   changes ending at `@`.
 - Switch between one combined stack diff and per-change diffs.
 - Use VS Code's native diff editor, syntax highlighting, themes, and Comments API.
-- Add comments to added lines, unchanged context lines, and whole files.
+- Add comments to any line on the stored new side of a changed text file, or
+  to the whole file.
 - Review added, modified, deleted, renamed, copied, binary, and symbolic-link entries.
 - Refresh a review after jj rewrites while keeping exact comment history.
 - Keep unmatched comments as outdated threads linked to their original snapshot.
@@ -82,8 +83,11 @@ was closed as a duplicate.
    change. Use **Load older changes** to extend the history window.
 6. Confirm the ordered selection preview.
 7. Select a file under **Active Review** to open its native diff.
-8. Use the comment gutter on an added or unchanged new-side line, or use **Add File Comment**.
+8. Use the comment gutter on either stored side of a changed text file, or use
+   **Add File Comment**.
 9. After a selected change is rewritten, run **InReview: Refresh Review**.
+10. After adding direct descendant changes to the stack, run
+    **InReview: Include New Changes**.
 
 InReview stores immutable snapshots. A thread remains inline only when its complete target and context map exactly and uniquely to the refreshed diff. Otherwise, it becomes **Outdated** and stays available from the Comments view.
 
@@ -93,6 +97,14 @@ request can contain fewer than `X` changes. InReview rejects merges,
 divergent changes, and unresolved conflicts in the selected stack. Refresh
 follows the original stable change IDs after rewrites; it does not add a new
 child that later becomes `@`.
+
+**Include New Changes** lists the contiguous direct descendants between the
+current review head and `@`. Choose the newest change to include; all earlier
+descendants in that list are included, while later descendants remain outside
+the review. InReview rejects unrelated working copies, gaps, merges,
+divergence, conflicts, and reviews that already include `@`. Existing comments
+project to the new immutable snapshot with the same exact matching rules as
+refresh.
 
 **Choose Range** browses up to 200 ancestors of `@` in pages of 50. The newest
 and oldest selected changes are both included. InReview rejects a range that
@@ -104,12 +116,16 @@ contiguous, single-parent chain. InReview previews the resolved changes and
 stores their full stable change IDs. It does not save or re-evaluate the
 original revset during refresh.
 
-Line comments are available only on added or unchanged lines on the new side.
-Deleted lines remain visible but are not commentable. Deleted files can receive
-file comments. A refresh keeps a thread current only when its full target and
-context have one exact match. All other threads become **Outdated** and remain
-linked to their immutable original snapshot. User comments can be edited or
-deleted. Agent replies are immutable. Resolved threads can be reopened.
+Line comments are available on any line of the stored original or modified
+content for a text file included in the diff. This includes deleted lines and
+the original content of deleted files. Expand an unchanged section in the
+native diff to comment outside a displayed hunk. A refresh keeps a thread
+current only when its side, full target, and context have one exact match.
+Hunk comments and full-file comments use separate exact anchors; InReview does
+not fall back to fuzzy matching. All other threads become **Outdated** and
+remain linked to their immutable original snapshot. User comments can be
+edited or deleted. Agent replies are immutable. Resolved threads can be
+reopened.
 
 ## Connect GitHub Copilot CLI
 
@@ -163,6 +179,7 @@ Use the Command Palette or the matching view and comment actions.
 | --- | --- |
 | **InReview: Start Review** | Select and capture a range, revset, or latest change stack. |
 | **InReview: Refresh Review** | Capture rewritten versions of the same stable change IDs. |
+| **InReview: Include New Changes** | Choose a direct descendant endpoint to append to the active review. |
 | **InReview: Archive Review** | Make the active review read-only and move it to history. |
 | **InReview: Restore Archived Review** | Restore an archived review as the active review. |
 | **InReview: Rename Review** | Change the active review title. |
@@ -203,7 +220,7 @@ requests. MCP traffic stays on a local per-user socket or named pipe.
 - One jj repository per VS Code window.
 - Reviews must contain one contiguous, single-parent change stack.
 - Merge changes and unresolved conflicts are rejected.
-- No comments on deleted lines.
+- No comments on unchanged files outside the selected diff.
 - Native per-file diffs rather than VS Code's proposed multi-file diff API.
 - No bridge forwarding between local and remote extension hosts.
 - No cloud synchronization or shared review server.

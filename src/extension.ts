@@ -448,6 +448,7 @@ function registerCommands(
   const handlers: Record<string, (...args: unknown[]) => Promise<void>> = {
     "inreview.startReview": async () => controller.startReview(),
     "inreview.refreshReview": async () => controller.refreshReview(),
+    "inreview.includeNewChanges": async () => controller.includeNewChanges(),
     "inreview.archiveReview": async () => controller.archiveReview(),
     "inreview.restoreArchivedReview": async (value) =>
       controller.restoreArchivedReview(value),

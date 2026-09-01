@@ -25,6 +25,23 @@ export const commentTargetSchema = z.discriminatedUnion("kind", [
 ]);
 export type CommentTarget = z.infer<typeof commentTargetSchema>;
 
+export const fullFileLineContextSchema = z
+  .object({
+    targetIndex: z.number().int().nonnegative(),
+    lines: z.array(z.string().max(65_536)).min(1).max(11),
+    fileFingerprint: sha256Schema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.targetIndex >= value.lines.length) {
+      context.addIssue({
+        code: "custom",
+        message: "The full-file target index must identify a stored context line.",
+      });
+    }
+  });
+export type FullFileLineContext = z.infer<typeof fullFileLineContextSchema>;
+
 export const commentAnchorSchema = z
   .object({
     reviewId: uuidSchema.optional(),
@@ -32,11 +49,13 @@ export const commentAnchorSchema = z
     view: viewIdentitySchema,
     fileId: z.string().min(1).max(512).optional(),
     target: commentTargetSchema,
+    side: z.enum(["old", "new"]).optional(),
     originalPath: pathSchema.nullable(),
     currentPath: pathSchema.nullable(),
     fileStatus: fileStatusSchema,
     targetText: z.string().nullable(),
     storedHunk: patchHunkSchema.nullable(),
+    fullFileContext: fullFileLineContextSchema.nullable().optional(),
     contextFingerprint: sha256Schema,
   })
   .strict()
@@ -45,12 +64,45 @@ export const commentAnchorSchema = z
       context.addIssue({ code: "custom", message: "An anchor must have a file path." });
     }
     if (anchor.target.kind === "line" && anchor.currentPath === null) {
-      context.addIssue({ code: "custom", message: "A line anchor must target the new side." });
+      if (anchor.side !== "old") {
+        context.addIssue({ code: "custom", message: "A new-side line anchor must have a current path." });
+      }
     }
-    if (anchor.target.kind === "file" && (anchor.targetText !== null || anchor.storedHunk !== null)) {
+    if (anchor.target.kind === "line" && anchor.side === "old" && anchor.originalPath === null) {
+      context.addIssue({ code: "custom", message: "An old-side line anchor must have an original path." });
+    }
+    if (anchor.target.kind === "file" && anchor.side !== undefined) {
+      context.addIssue({ code: "custom", message: "A file anchor cannot select a diff side." });
+    }
+    if (
+      anchor.target.kind === "file" &&
+      (anchor.targetText !== null ||
+        anchor.storedHunk !== null ||
+        anchor.fullFileContext != null)
+    ) {
       context.addIssue({
         code: "custom",
         message: "A file anchor cannot contain line context.",
+      });
+    }
+    if (
+      anchor.target.kind === "line" &&
+      (anchor.storedHunk === null) === (anchor.fullFileContext == null)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "A line anchor must contain exactly one context form.",
+      });
+    }
+    if (
+      anchor.target.kind === "line" &&
+      anchor.fullFileContext != null &&
+      anchor.fullFileContext.lines[anchor.fullFileContext.targetIndex] !==
+        anchor.targetText
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "The full-file context target must match the anchored line.",
       });
     }
   });
@@ -62,6 +114,7 @@ export const commentProjectionSchema = z
     view: viewIdentitySchema,
     path: pathSchema,
     target: commentTargetSchema,
+    side: z.enum(["old", "new"]).optional(),
   })
   .strict();
 export type CommentProjection = z.infer<typeof commentProjectionSchema>;

@@ -22,6 +22,7 @@ import {
 } from "./processRunner";
 import {
   buildLastSelection,
+  buildExtendedSelection,
   buildRangeSelection,
   buildRefreshSelection,
   buildRevsetSelection,
@@ -485,6 +486,37 @@ export class JjReadSession {
       storedChangeIds,
       records,
     );
+  }
+
+  public async extendSelection(
+    storedChangeIds: readonly string[],
+    newestChangeId?: string,
+    signal?: AbortSignal,
+  ): Promise<ReviewSelection> {
+    const current = await this.resolveSelection(storedChangeIds, signal);
+    const oldestChangeId = current.changeIds[0];
+    if (oldestChangeId === undefined) {
+      throw new JjSelectionError("A review requires at least one change ID.");
+    }
+    if (newestChangeId === undefined) {
+      const records = await this.readCommitRevset(
+        `change_id("${oldestChangeId}")::@`,
+        signal,
+      );
+      return buildExtendedSelection(this.operationId, current, records);
+    }
+    assertChangeId(newestChangeId, "Newest");
+    await this.requireUniqueChange(newestChangeId, signal);
+    const records = await this.readCommitRevset(
+      `change_id("${oldestChangeId}")::change_id("${newestChangeId}")`,
+      signal,
+    );
+    if (records.at(-1)?.changeId !== newestChangeId) {
+      throw new JjSelectionError(
+        "The selected change is not a direct descendant of the active review head.",
+      );
+    }
+    return buildExtendedSelection(this.operationId, current, records, false);
   }
 
   public async getCommit(

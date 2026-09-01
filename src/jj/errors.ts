@@ -125,6 +125,12 @@ export class JjSelectionError extends JjError {
   }
 }
 
+export class JjNoNewChangesError extends JjSelectionError {
+  public constructor() {
+    super("The current working copy has no new descendant changes to include.");
+  }
+}
+
 export class JjAmbiguousChangeError extends JjError {
   public constructor(public readonly changeId: string) {
     super(
