@@ -30,6 +30,7 @@ export interface ReviewReadSession extends SnapshotReadSession {
   ): Promise<ReviewSelection>;
   extendSelection(
     storedChangeIds: readonly string[],
+    newestChangeId?: string,
     signal?: AbortSignal,
   ): Promise<ReviewSelection>;
 }

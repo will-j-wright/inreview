@@ -96,6 +96,7 @@ class FakeSession implements ReviewReadSession {
 
   public extendSelection(
     storedChangeIds: readonly string[],
+    newestChangeId?: string,
   ): Promise<ReviewSelection> {
     if (
       storedChangeIds.some(
@@ -108,7 +109,22 @@ class FakeSession implements ReviewReadSession {
         ),
       );
     }
-    return Promise.resolve(this.version.selection);
+    if (newestChangeId === undefined) {
+      return Promise.resolve(this.version.selection);
+    }
+    const newestIndex =
+      this.version.selection.changeIds.indexOf(newestChangeId);
+    if (newestIndex < storedChangeIds.length) {
+      return Promise.reject(
+        new JjStaleSelectionError("The selected endpoint is invalid."),
+      );
+    }
+    return Promise.resolve({
+      ...selectionFrom(
+        this.version.selection.commits.slice(0, newestIndex + 1),
+      ),
+      operationId: this.operationId,
+    });
   }
 
   public diffGit(): Promise<Buffer> {
@@ -504,6 +520,34 @@ describe("review lifecycle", () => {
         },
       });
       expect(events).toEqual(["started", "extended"]);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("includes only through the selected new descendant", async () => {
+    const initial = version(["change-a"], ["commit-a"], "Initial");
+    const descendants = version(
+      ["change-a", "change-b", "change-c"],
+      ["commit-a", "commit-b", "commit-c"],
+      "Later fix",
+    );
+    const harness = await createHarness([initial, descendants]);
+    try {
+      await harness.service.startReview({ requestedChangeCount: 1 });
+      const session = await harness.service.beginIncludeNewChanges();
+
+      expect(session.candidates.map(({ changeId }) => changeId)).toEqual([
+        "change-b",
+        "change-c",
+      ]);
+      const result = await session.includeThrough("change-b");
+
+      expect(result.addedChangeCount).toBe(1);
+      expect(result.record.review.orderedChangeIds).toEqual([
+        "change-a",
+        "change-b",
+      ]);
     } finally {
       await harness.close();
     }

@@ -89,6 +89,7 @@ export function buildExtendedSelection(
   operationId: string,
   current: ReviewSelection,
   records: readonly JjCommit[],
+  requireCurrentWorkingCopy = true,
 ): ReviewSelection {
   for (const [index, commit] of current.commits.entries()) {
     const candidate = records[index];
@@ -105,8 +106,9 @@ export function buildExtendedSelection(
     throw new JjNoNewChangesError();
   }
   if (
-    records.filter((record) => record.currentWorkingCopy).length !== 1 ||
-    records.at(-1)?.currentWorkingCopy !== true
+    requireCurrentWorkingCopy &&
+    (records.filter((record) => record.currentWorkingCopy).length !== 1 ||
+      records.at(-1)?.currentWorkingCopy !== true)
   ) {
     throw new JjSelectionError(
       "The expanded review must end at the current working copy.",

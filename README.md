@@ -93,11 +93,13 @@ divergent changes, and unresolved conflicts in the selected stack. Refresh
 follows the original stable change IDs after rewrites; it does not add a new
 child that later becomes `@`.
 
-**Include New Changes** explicitly appends the contiguous direct descendant
-chain from the current review head through `@`. It rejects unrelated working
-copies, gaps, merges, divergence, conflicts, and reviews that already include
-`@`. Existing comments project to the new immutable snapshot with the same
-exact matching rules as refresh.
+**Include New Changes** lists the contiguous direct descendants between the
+current review head and `@`. Choose the newest change to include; all earlier
+descendants in that list are included, while later descendants remain outside
+the review. InReview rejects unrelated working copies, gaps, merges,
+divergence, conflicts, and reviews that already include `@`. Existing comments
+project to the new immutable snapshot with the same exact matching rules as
+refresh.
 
 **Choose Range** browses up to 200 ancestors of `@` in pages of 50. The newest
 and oldest selected changes are both included. InReview rejects a range that
@@ -171,7 +173,7 @@ Use the Command Palette or the matching view and comment actions.
 | --- | --- |
 | **InReview: Start Review** | Select and capture a range, revset, or latest change stack. |
 | **InReview: Refresh Review** | Capture rewritten versions of the same stable change IDs. |
-| **InReview: Include New Changes** | Append direct descendant changes through `@` to the active review. |
+| **InReview: Include New Changes** | Choose a direct descendant endpoint to append to the active review. |
 | **InReview: Archive Review** | Make the active review read-only and move it to history. |
 | **InReview: Restore Archived Review** | Restore an archived review as the active review. |
 | **InReview: Rename Review** | Change the active review title. |

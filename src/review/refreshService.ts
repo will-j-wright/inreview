@@ -106,21 +106,31 @@ export class RefreshService {
       const session = await this.#repository.openReadSession(options.signal);
       const selection = await session.extendSelection(
         previous.review.orderedChangeIds,
+        undefined,
         options.signal,
       );
-      const record = await this.captureAndCommit(
+      return this.includeSelectionUnlocked(
         previous,
         selection,
         session,
         options,
-        true,
       );
-      return {
-        record,
-        addedChangeCount:
-          record.review.orderedChangeIds.length -
-          previous.review.orderedChangeIds.length,
-      };
+    });
+  }
+
+  public async includeSelectedChanges(
+    selection: ReviewSelection,
+    session: ReviewReadSession,
+    options: RefreshReviewOptions = {},
+  ): Promise<IncludeNewChangesResult> {
+    return runRepositoryMutation(this.#store.fingerprint, async () => {
+      const previous = await this.requireMutableActive(options);
+      return this.includeSelectionUnlocked(
+        previous,
+        selection,
+        session,
+        options,
+      );
     });
   }
 
@@ -165,6 +175,42 @@ export class RefreshService {
       );
     }
     return previous;
+  }
+
+  private async includeSelectionUnlocked(
+    previous: ReviewRecord,
+    selection: ReviewSelection,
+    session: ReviewReadSession,
+    options: RefreshReviewOptions,
+  ): Promise<IncludeNewChangesResult> {
+    if (selection.operationId !== session.operationId) {
+      throw new StaleReviewError(
+        "The selected changes belong to another jj operation.",
+      );
+    }
+    if (
+      previous.review.orderedChangeIds.some(
+        (changeId, index) => selection.changeIds[index] !== changeId,
+      ) ||
+      selection.changeIds.length <= previous.review.orderedChangeIds.length
+    ) {
+      throw new StaleReviewError(
+        "The selected changes do not extend the active review.",
+      );
+    }
+    const record = await this.captureAndCommit(
+      previous,
+      selection,
+      session,
+      options,
+      true,
+    );
+    return {
+      record,
+      addedChangeCount:
+        record.review.orderedChangeIds.length -
+        previous.review.orderedChangeIds.length,
+    };
   }
 
   private async captureAndCommit(

@@ -208,9 +208,27 @@ export class ReviewCommandController {
       return;
     }
     try {
+      const session = await service.beginIncludeNewChanges();
+      const picked = await this.options.ui.showItemQuickPick(
+        session.candidates.map((candidate, index) => ({
+          id: candidate.changeId,
+          label: candidate.currentWorkingCopy
+            ? `$(circle-filled) ${candidateLabel(candidate)}`
+            : candidateLabel(candidate),
+          description: candidate.changeId.slice(0, 12),
+          detail: `Include ${String(index + 1)} new ${index === 0 ? "change" : "changes"}${candidate.currentWorkingCopy ? " through @." : "."}`,
+        })),
+        {
+          title: "Include New Changes",
+          placeHolder: "Choose the newest change to include. Earlier descendants are included too.",
+        },
+      );
+      if (picked === undefined) {
+        return;
+      }
       let result: IncludeNewChangesResult;
       try {
-        result = await service.includeNewChanges();
+        result = await session.includeThrough(picked);
       } catch (error) {
         if (!(error instanceof LargeDiffConfirmationRequiredError)) {
           throw error;
@@ -218,7 +236,9 @@ export class ReviewCommandController {
         if (!(await this.confirmLargeDiff(error.changedLineCount))) {
           return;
         }
-        result = await service.includeNewChanges({ confirmLargeDiff: true });
+        result = await session.includeThrough(picked, {
+          confirmLargeDiff: true,
+        });
       }
       await this.options.ui.showInformationMessage(
         `Included ${String(result.addedChangeCount)} new ${result.addedChangeCount === 1 ? "change" : "changes"} in the active review.`,
@@ -718,7 +738,7 @@ export type ReviewCommandService = Pick<
   | "startReview"
   | "archiveAndStartReview"
   | "refreshReview"
-  | "includeNewChanges"
+  | "beginIncludeNewChanges"
   | "archiveActiveReview"
   | "restoreReview"
   | "archiveActiveAndRestoreReview"
