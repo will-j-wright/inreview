@@ -160,6 +160,9 @@ copilot mcp add --tools "list_workspaces,connect_workspace,read_review_metadata,
 The `inreview` entry discovers every workspace registered in that environment.
 You do not need one MCP entry per repository. Ask the agent to list the open
 workspaces, connect to one returned absolute root, and review its open comments.
+Copilot CLI can start before VS Code. The MCP frontend keeps the per-user
+daemon available, waits briefly for a newly opened trusted workspace to
+register, and reconnects automatically if the daemon is replaced.
 
 ### MCP tools
 

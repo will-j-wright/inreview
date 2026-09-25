@@ -1,4 +1,11 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
@@ -51,6 +58,7 @@ pub struct RpcPeer {
     pub id: Uuid,
     writer: Mutex<tokio::io::WriteHalf<BoxStream>>,
     pending: Mutex<HashMap<String, PendingSender>>,
+    closed: AtomicBool,
 }
 
 impl RpcPeer {
@@ -60,22 +68,35 @@ impl RpcPeer {
             id: Uuid::new_v4(),
             writer: Mutex::new(writer),
             pending: Mutex::new(HashMap::new()),
+            closed: AtomicBool::new(false),
         });
         let task_peer = Arc::clone(&peer);
         tokio::spawn(async move {
             let _ = read_loop(Arc::clone(&task_peer), reader, Arc::clone(&handler)).await;
             task_peer
-                .fail_pending("BRIDGE_DISCONNECTED", "The bridge connection closed.")
+                .mark_closed("BRIDGE_DISCONNECTED", "The bridge connection closed.")
                 .await;
             handler.disconnected(task_peer).await;
         });
         peer
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, RpcError> {
         let id = Uuid::new_v4().to_string();
         let (sender, receiver) = oneshot::channel();
-        self.pending.lock().await.insert(id.clone(), sender);
+        let mut pending = self.pending.lock().await;
+        if self.is_closed() {
+            return Err(RpcError::new(
+                "BRIDGE_DISCONNECTED",
+                "The bridge connection closed.",
+            ));
+        }
+        pending.insert(id.clone(), sender);
+        drop(pending);
         if let Err(error) = self
             .send(&json!({
                 "type": "request",
@@ -86,6 +107,8 @@ impl RpcPeer {
             .await
         {
             self.pending.lock().await.remove(&id);
+            self.mark_closed("BRIDGE_DISCONNECTED", "The bridge connection closed.")
+                .await;
             return Err(RpcError::new("BRIDGE_WRITE_FAILED", error.to_string()));
         }
         match timeout(REQUEST_TIMEOUT, receiver).await {
@@ -102,6 +125,12 @@ impl RpcPeer {
                 ))
             }
         }
+    }
+
+    pub async fn close(&self) {
+        self.mark_closed("BRIDGE_DISCONNECTED", "The bridge connection closed.")
+            .await;
+        let _ = self.writer.lock().await.shutdown().await;
     }
 
     async fn send(&self, message: &Value) -> Result<()> {
@@ -169,7 +198,10 @@ impl RpcPeer {
         Ok(())
     }
 
-    async fn fail_pending(&self, code: &str, message: &str) {
+    async fn mark_closed(&self, code: &str, message: &str) {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let pending = std::mem::take(&mut *self.pending.lock().await);
         for sender in pending.into_values() {
             let _ = sender.send(Err(RpcError::new(code, message)));
