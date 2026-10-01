@@ -47,5 +47,8 @@
 
 ### Fixed
 
+- Bound MCP comment context to the commented line and up to five lines on each
+  side. Replace response-only `anchor.storedHunk` and `anchor.fullFileContext`
+  with `anchor.context`, without changing persisted anchors.
 - Prevent host-injected Copilot CLI arguments from reaching the fixed native
   bridge command and breaking MCP initialization.

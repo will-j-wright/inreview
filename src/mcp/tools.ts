@@ -415,14 +415,7 @@ function commentThreadOutput(thread: CommentThread) {
           : null,
       fileStatus: thread.anchor.fileStatus,
       targetLine: thread.anchor.targetText,
-      storedHunk: thread.anchor.storedHunk,
-      fullFileContext:
-        thread.anchor.fullFileContext == null
-          ? null
-          : {
-              targetIndex: thread.anchor.fullFileContext.targetIndex,
-              lines: [...thread.anchor.fullFileContext.lines],
-            },
+      context: commentLineContext(thread),
     },
     currentLocation:
       thread.projection === null
@@ -441,6 +434,38 @@ function commentThreadOutput(thread: CommentThread) {
                 : null,
           },
     messages: thread.messages.map(commentMessageOutput),
+  };
+}
+
+function commentLineContext(thread: CommentThread) {
+  const { anchor } = thread;
+  if (anchor.target.kind === "file") {
+    return null;
+  }
+  if (anchor.fullFileContext != null) {
+    return {
+      targetIndex: anchor.fullFileContext.targetIndex,
+      lines: [...anchor.fullFileContext.lines],
+    };
+  }
+  const side = anchor.side ?? "new";
+  const lines = anchor.storedHunk?.lines.filter(
+    (line) => (side === "old" ? line.oldLine : line.newLine) !== null,
+  );
+  const targetLine = anchor.target.line;
+  const targetIndex = lines?.findIndex(
+    (line) => (side === "old" ? line.oldLine : line.newLine) === targetLine,
+  );
+  if (lines === undefined || targetIndex === undefined || targetIndex < 0) {
+    throw new DomainError(
+      "INVARIANT_VIOLATION",
+      "A comment anchor has no matching stored context line.",
+    );
+  }
+  const start = Math.max(0, targetIndex - 5);
+  return {
+    targetIndex: targetIndex - start,
+    lines: lines.slice(start, targetIndex + 6).map((line) => line.content),
   };
 }
 

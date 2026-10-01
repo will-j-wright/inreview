@@ -492,7 +492,7 @@ fn tool_definitions() -> Vec<Tool> {
         ),
         tool(
             "read_comments",
-            "Read bounded current, outdated, open, or resolved review comments. A side of old refers to immutable pre-change snapshot content; use the returned target line and exact stored context instead of the current working-tree line.",
+            "Read actual review threads, defaulting to open threads including outdated ones, with pagination. Each line comment includes at most five stored lines before and after its target on the recorded side, not the full diff hunk. A side of old refers to immutable pre-change snapshot content; use anchor.context and its targetIndex instead of the current working-tree line.",
             json!({
                 "type": "object",
                 "properties": {

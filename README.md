@@ -175,6 +175,14 @@ register, and reconnects automatically if the daemon is replaced.
 | `reply_comment` | Reply to one open thread as `Agent` without resolving it. |
 | `close_comments` | Atomically resolve one or more open threads with optional resolution notes. |
 
+`read_comments` returns only existing threads. By default, it returns up to 50
+open threads, including outdated threads; use `outdated: false` to exclude
+outdated threads. Each line comment includes `anchor.targetLine` and
+`anchor.context`: at most five stored lines before and after the target on its
+recorded side, with a zero-based `targetIndex`. File comments have no line
+context. The response does not include full diff hunks or raw patches. Full
+anchors stay in local storage for exact projection across refreshes.
+
 The bridge uses no bearer token. It restricts its socket or named pipe to the
 current user, validates bounded messages, isolates MCP sessions, and exposes
 only the six tools above. The bridge routes operations to the registered

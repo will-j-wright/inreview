@@ -5,7 +5,6 @@ import {
   fileStatusSchema,
   fileSummarySchema,
   lineRangeSchema,
-  patchHunkSchema,
   viewIdentitySchema,
 } from "../domain/review";
 import {
@@ -273,13 +272,15 @@ const commentLocationSchema = z
     side: z.enum(["old", "new"]).nullable(),
     fileStatus: fileStatusSchema,
     targetLine: z.string().nullable(),
-    storedHunk: patchHunkSchema.nullable(),
-    fullFileContext: z
+    context: z
       .object({
         targetIndex: z.number().int().nonnegative(),
         lines: z.array(z.string()).min(1).max(11),
       })
       .strict()
+      .refine((value) => value.targetIndex < value.lines.length, {
+        message: "The target index must identify a returned context line.",
+      })
       .nullable(),
   })
   .strict();

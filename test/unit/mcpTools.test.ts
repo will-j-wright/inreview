@@ -180,7 +180,261 @@ describe("MCP review reads and mutations", () => {
     }
   });
 
-  it("applies all comment filters and provides stable pagination with complete context", async () => {
+  it("keeps large added-file output small for multiple threads without changing stored anchors", async () => {
+    const lineCount = 10_000;
+    const lines = Array.from(
+      { length: lineCount },
+      (_, index) => `stored line ${String(index + 1).padStart(5, "0")}`,
+    );
+    const hunk = {
+      header: `@@ -0,0 +1,${String(lineCount)} @@`,
+      oldStart: 0,
+      oldLines: 0,
+      newStart: 1,
+      newLines: lineCount,
+      lines: lines.map((content, index) => ({
+        kind: "addition" as const,
+        content,
+        oldLine: null,
+        newLine: index + 1,
+      })),
+      raw: lines.map((line) => `+${line}\n`).join(""),
+    };
+    const harness = await createHarness(true, (record) => ({
+      ...record,
+      review: { ...record.review, counts: { open: 0, outdated: 0, resolved: 0 } },
+      threads: [],
+      snapshots: record.snapshots.map((snapshot) => ({
+        ...snapshot,
+        views: snapshot.views.map((view) => ({
+          ...view,
+          changedLineCount: lineCount,
+          files: view.files.map((file) => ({
+            ...file,
+            hunks: [hunk],
+            addedLines: lineCount,
+          })),
+        })),
+      })),
+    }));
+    try {
+      const handlers = connectedHandlers(harness);
+      await handlers.connectWorkspace({ workspace_root: repositoryRoot });
+      expect((await readComments(handlers, {})).comments).toEqual([]);
+      const targetLines = [1, 5_000, lineCount];
+      for (const line of targetLines) {
+        await harness.service.commentService.createThread({
+          reviewId: harness.record.review.id,
+          snapshotId: harness.record.review.currentSnapshotId,
+          view: { mode: "combined" },
+          fileId: "file-a",
+          target: { kind: "line", line },
+          body: `Review line ${String(line)}`,
+          displayName: "Reviewer",
+        });
+      }
+      const before = await harness.store.getReview(harness.record.review.id);
+      const result = await handlers.readComments({});
+      const output = readCommentsOutputSchema.parse(result.structuredContent);
+      expect(output.status).toBe("success");
+      if (output.status !== "success") {
+        throw new Error(output.error.message);
+      }
+      expect(output.comments).toHaveLength(3);
+      for (const comment of output.comments) {
+        const line = comment.anchor.line;
+        if (line === null) {
+          throw new Error("The regression fixture requires a line comment.");
+        }
+        const start = Math.max(0, line - 1 - 5);
+        expect(comment.anchor.context).toEqual({
+          targetIndex: line - 1 - start,
+          lines: lines.slice(start, Math.min(lineCount, line + 5)),
+        });
+        expect(comment.anchor.context?.lines.length).toBeLessThanOrEqual(11);
+        expect(comment.anchor.targetLine).toBe(lines[line - 1]);
+      }
+      // Measure both MCP representations, not just the schema-parsed object.
+      expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThan(16_000);
+      const previousOutput = {
+        ...output,
+        comments: output.comments.map((comment) => {
+          const stored = before.threads.find(
+            ({ commentId }) => commentId === comment.commentId,
+          );
+          if (stored === undefined) {
+            throw new Error("The returned thread must exist in storage.");
+          }
+          const anchor = { ...comment.anchor };
+          Reflect.deleteProperty(anchor, "context");
+          return {
+            ...comment,
+            anchor: {
+              ...anchor,
+              storedHunk: stored.anchor.storedHunk,
+              fullFileContext: null,
+            },
+          };
+        }),
+      };
+      const previousResult = {
+        content: [{ type: "text", text: JSON.stringify(previousOutput) }],
+        structuredContent: previousOutput,
+      };
+      const previousBytes = Buffer.byteLength(JSON.stringify(previousResult));
+      const currentBytes = Buffer.byteLength(JSON.stringify(result));
+      expect(previousBytes).toBeGreaterThan(currentBytes * 100);
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain("storedHunk");
+      expect(serialized).not.toContain('"raw"');
+      expect(serialized).not.toContain("stored line 02500");
+      expect(serialized).not.toContain("stored line 07500");
+      expect(await harness.store.getReview(harness.record.review.id)).toEqual(before);
+      expect(before.threads.every(
+        ({ anchor }) => anchor.storedHunk?.lines.length === lineCount,
+      )).toBe(true);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("reports invalid stored hunk targets instead of returning incomplete context", async () => {
+    const harness = await createHarness(true, (record) => {
+      const thread = record.threads[0];
+      if (thread === undefined) {
+        throw new Error("The fixture requires a thread.");
+      }
+      thread.anchor.target = { kind: "line", line: 999 };
+      return record;
+    });
+    try {
+      const handlers = connectedHandlers(harness);
+      await handlers.connectWorkspace({ workspace_root: repositoryRoot });
+      const result = await handlers.readComments({});
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        status: "error",
+        error: { code: "INVALID_DATA" },
+      });
+      expect(result.structuredContent).not.toHaveProperty("comments");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("returns only new-side hunk context and excludes deleted lines", async () => {
+    const harness = await createHarness(true, (record) => {
+      const thread = record.threads[0];
+      if (thread?.anchor.storedHunk == null) {
+        throw new Error("The fixture requires a stored hunk.");
+      }
+      thread.anchor.storedHunk.lines.unshift({
+        kind: "deletion",
+        content: "old content must not be returned",
+        oldLine: 1,
+        newLine: null,
+      });
+      thread.anchor.storedHunk.oldStart = 1;
+      thread.anchor.storedHunk.oldLines = 1;
+      return record;
+    });
+    try {
+      const handlers = connectedHandlers(harness);
+      await handlers.connectWorkspace({ workspace_root: repositoryRoot });
+      const output = await readComments(handlers, {});
+      expect(output.comments[0]?.anchor.context).toEqual({
+        targetIndex: 0,
+        lines: ["hello"],
+      });
+      expect(JSON.stringify(output)).not.toContain("old content must not be returned");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it.each([
+    { side: "old" as const, outdated: false },
+    { side: "new" as const, outdated: false },
+    { side: "old" as const, outdated: true },
+    { side: "new" as const, outdated: true },
+  ])("preserves exact full-file context for $side-side threads (outdated=$outdated)", async ({ side, outdated }) => {
+    const lines = Array.from({ length: 11 }, (_, index) => `${side} context ${String(index)}`);
+    const harness = await createHarness(true, (record) => {
+      const thread = record.threads[0];
+      if (thread === undefined) {
+        throw new Error("The fixture requires a thread.");
+      }
+      thread.anchor = {
+        ...thread.anchor,
+        side,
+        originalPath: "old-file.txt",
+        target: { kind: "line", line: 100 },
+        targetText: lines[5] ?? null,
+        storedHunk: null,
+        fullFileContext: { targetIndex: 5, lines, fileFingerprint: "a".repeat(64) },
+      };
+      if (outdated) {
+        thread.currentness = "outdated";
+        thread.projection = null;
+        record.review.counts = { open: 0, outdated: 1, resolved: 0 };
+      } else if (thread.projection !== null) {
+        thread.projection.side = side;
+        thread.projection.target = { kind: "line", line: 105 };
+        thread.projection.path = side === "old" ? "old-file.txt" : "file.txt";
+      }
+      return record;
+    });
+    try {
+      const handlers = connectedHandlers(harness);
+      await handlers.connectWorkspace({ workspace_root: repositoryRoot });
+      const output = await readComments(handlers, {});
+      expect(output.comments[0]).toMatchObject({
+        outdated,
+        anchor: {
+          side,
+          line: 100,
+          targetLine: lines[5],
+          context: { targetIndex: 5, lines },
+        },
+      });
+      expect(output.comments[0]?.currentLocation).toEqual(
+        outdated ? null : expect.objectContaining({ side, line: 105 }),
+      );
+      expect(JSON.stringify(output)).not.toContain("fileFingerprint");
+      expect(JSON.stringify(output)).not.toContain("fullFileContext");
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("returns no line context for file comments", async () => {
+    const harness = await createHarness();
+    try {
+      const thread = await harness.service.commentService.createThread({
+        reviewId: harness.record.review.id,
+        snapshotId: harness.record.review.currentSnapshotId,
+        view: { mode: "combined" },
+        fileId: "file-a",
+        target: { kind: "file" },
+        body: "Review the file.",
+        displayName: "Reviewer",
+      });
+      const handlers = connectedHandlers(harness);
+      await handlers.connectWorkspace({ workspace_root: repositoryRoot });
+      const output = await readComments(handlers, { comment_ids: [thread.commentId] });
+      expect(output.comments).toHaveLength(1);
+      expect(output.comments[0]?.anchor).toMatchObject({
+        line: null,
+        side: null,
+        targetLine: null,
+        context: null,
+      });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("applies all comment filters and provides stable pagination with bounded context", async () => {
     const harness = await createHarness(true, makeThreadSet);
     try {
       const handlers = connectedHandlers(harness);
@@ -189,9 +443,10 @@ describe("MCP review reads and mutations", () => {
       const defaults = await readComments(handlers, {});
       expect(defaults.comments.map(({ commentId }) => commentId)).toHaveLength(3);
       expect(defaults.comments.every(({ state }) => state === "open")).toBe(true);
-      expect(defaults.comments[0]?.anchor.storedHunk?.lines[0]?.content).toBe(
-        "hello",
-      );
+      expect(defaults.comments[0]?.anchor.context).toEqual({
+        targetIndex: 0,
+        lines: ["hello"],
+      });
       expect(defaults.comments[0]?.anchor.side).toBe("new");
       expect(defaults.comments[0]?.currentLocation?.side).toBe("new");
 
